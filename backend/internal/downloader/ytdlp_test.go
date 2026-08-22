@@ -320,6 +320,8 @@ func main() {
 	fmt.Println("@QDP@downloading|50|100|NA|1048576|1|NA|NA")
 	fmt.Println("@QDPP@started|Merger")
 	fmt.Println("[Merger] Merging formats into \"" + dest + "\"")
+	// A real yt-dlp leaves a file behind; the engine now verifies that it did.
+	_ = os.WriteFile(dest, []byte("merged video bytes"), 0o644)
 	time.Sleep(10 * time.Millisecond)
 }
 `

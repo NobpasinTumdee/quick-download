@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -125,9 +126,150 @@ func (m *Manager) runYtDlp(ctx context.Context, job *Job, kind Kind) error {
 		return fmt.Errorf("yt-dlp failed: %w", waitErr)
 	}
 
+	// yt-dlp can exit 0 having downloaded nothing - most often when
+	// --ignore-errors swallows a failed extraction. Never call a job complete
+	// without a file on disk to show for it.
+	if err := m.verifyYtDlpOutput(job, errTail); err != nil {
+		return err
+	}
+
 	job.setPhase("done")
 	job.markExternalComplete()
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Output verification
+// ---------------------------------------------------------------------------
+
+// Suffixes yt-dlp leaves behind for work in progress. A half-written file is
+// not a completed download, so these never count as a match.
+var incompleteSuffixes = []string{".part", ".ytdl", ".temp", ".tmp"}
+
+// perTrackSuffixRe matches the format-id yt-dlp appends to each track it
+// downloads separately, e.g. "Clip.f137.mp4" for the video half of a merge.
+var perTrackSuffixRe = regexp.MustCompile(`\.f\d+$`)
+
+// verifyYtDlpOutput confirms that a successful-looking run actually produced a
+// file, and adopts the real path when yt-dlp chose a different one.
+//
+// Two things routinely move the goalposts between the name yt-dlp announces and
+// the name it finally writes:
+//
+//   - the container changes (a failed mp4 merge falls back to .mkv), and
+//   - a post-processor replaces the file entirely (--extract-audio turns
+//     "Clip.webm" into "Clip.mp3" and deletes the original).
+//
+// So an exact miss is not yet a failure: we look for any sibling sharing the
+// stem before concluding that nothing was downloaded.
+func (m *Manager) verifyYtDlpOutput(job *Job, tail *ringBuffer) error {
+	job.mu.RLock()
+	predicted := job.finalPath
+	dir := job.dir
+	job.mu.RUnlock()
+
+	// No Destination line at all means yt-dlp never started a download. That is
+	// the phantom completion in its purest form.
+	if predicted == "" {
+		return phantomError(tail, "yt-dlp never reported an output file")
+	}
+
+	// 1. The exact path it told us about.
+	if isRealFile(predicted) {
+		return nil
+	}
+
+	// 2. Anything sharing the stem, for the container/post-processor cases.
+	if found := findByStem(dir, predicted); found != "" {
+		log.Printf("job %s: output resolved to %s (predicted %s)", job.ID, found, predicted)
+		job.setFinalPath(found, true)
+		return nil
+	}
+
+	return phantomError(tail, fmt.Sprintf("expected %s", filepath.Base(predicted)))
+}
+
+// findByStem looks for a finished file next to the predicted one, sharing its
+// name up to the extension. It returns "" when there is nothing plausible.
+func findByStem(dir, predicted string) string {
+	base := filepath.Base(predicted)
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+
+	// "Clip.f137" is the video half of a merge; the merged file is "Clip.mp4",
+	// so the format id has to come off before matching.
+	candidates := []string{stem}
+	if trimmed := perTrackSuffixRe.ReplaceAllString(stem, ""); trimmed != stem && trimmed != "" {
+		candidates = append(candidates, trimmed)
+	}
+
+	for _, candidate := range candidates {
+		matches, err := filepath.Glob(filepath.Join(dir, globQuote(candidate)+".*"))
+		if err != nil {
+			continue
+		}
+		for _, match := range matches {
+			if isRealFile(match) {
+				return match
+			}
+		}
+	}
+	return ""
+}
+
+// isRealFile reports whether a path is a finished, non-empty file.
+func isRealFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		return false
+	}
+	lower := strings.ToLower(path)
+	for _, suffix := range incompleteSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return false
+		}
+	}
+	return true
+}
+
+// globQuote makes a literal string safe to embed in a filepath.Glob pattern.
+//
+// This matters more than it looks: the default output template is
+// "%(title)s [%(id)s].%(ext)s", so virtually every filename contains square
+// brackets, and "[abc123]" in a pattern is a character class matching ONE of
+// those characters. Backslash escaping is not an option either - Glob disables
+// it on Windows, where the separator is a backslash. Wrapping each
+// metacharacter in its own single-character class works on every platform.
+func globQuote(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for _, r := range s {
+		switch r {
+		case '*':
+			b.WriteString("[*]")
+		case '?':
+			b.WriteString("[?]")
+		case '[':
+			b.WriteString("[[]")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// phantomError builds the message shown on the card, carrying yt-dlp's own last
+// error when it left one - that is usually the real explanation.
+func phantomError(tail *ringBuffer, detail string) error {
+	base := "yt-dlp exited successfully but no output file was found (phantom completion)"
+	if detail != "" {
+		base = fmt.Sprintf("%s: %s", base, detail)
+	}
+	if tail != nil {
+		if last := tail.String(); last != "" && strings.Contains(last, "ERROR:") {
+			return fmt.Errorf("%s - %s", base, last)
+		}
+	}
+	return errors.New(base)
 }
 
 // ytDlpArgs builds the command line.
@@ -236,6 +378,10 @@ var (
 	legacyPercentRe = regexp.MustCompile(`\[download\]\s+(\d{1,3}(?:\.\d+)?)%`)
 	// "[download] Destination: C:\path\file.f137.mp4"
 	destinationRe = regexp.MustCompile(`^\[download\]\s+Destination:\s+(.+)$`)
+	// A post-processor announces the file it is creating, which supersedes the
+	// per-track download destination: --extract-audio writes "Clip.mp3" and
+	// deletes the "Clip.webm" the download step named.
+	postDestinationRe = regexp.MustCompile(`^\[(?:ExtractAudio|VideoConvertor|VideoRemuxer|Fixup\w*)\]\s+Destination:\s+(.+)$`)
 	// "[Merger] Merging formats into "C:\path\file.mp4""
 	mergerRe = regexp.MustCompile(`Merging formats into "(.+)"`)
 	// "[download] C:\path\file.mp4 has already been downloaded"
@@ -279,6 +425,11 @@ func (m *Manager) consumeYtDlpLine(job *Job, line string) {
 	if mm := mergerRe.FindStringSubmatch(line); len(mm) == 2 {
 		job.setFinalPath(strings.TrimSpace(mm[1]), true)
 		job.setPhase("merging")
+		m.Broadcast()
+		return
+	}
+	if mm := postDestinationRe.FindStringSubmatch(line); len(mm) == 2 {
+		job.setFinalPath(strings.TrimSpace(mm[1]), true)
 		m.Broadcast()
 		return
 	}
