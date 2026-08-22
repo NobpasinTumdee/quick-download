@@ -194,14 +194,20 @@ func (m *Manager) ytDlpArgs(job *Job, tools config.Tools) []string {
 	// Resolution / audio-only selection.
 	args = append(args, qualityArgs(req.Quality)...)
 
-	// Carry the browser's identity so gated streams resolve the same way —
-	// except on YouTube, where doing exactly that is what trips the anti-bot
-	// check. See the block comment at the bottom of this file.
+	// Carry the browser's identity so gated streams resolve the same way.
 	//
-	// The User-Agent matters as much as the cookie here: a session cookie is
-	// bound to the client that minted it, so a mismatched UA is itself a
-	// signal. All three go together or none do.
-	if sendBrowserIdentity(target) {
+	// The extension is the policy layer for credentials: its cookie allowlist
+	// decides whether any cookie was collected in the first place. A cookie that
+	// reaches us was therefore deliberate, and we honour it even on YouTube -
+	// otherwise adding youtube.com to the allowlist would silently do nothing.
+	//
+	// With no cookie, YouTube still gets nothing at all: forwarding a browser
+	// User-Agent and Referer on their own is what trips its anti-bot check.
+	//
+	// The three headers travel together or not at all. A session cookie is bound
+	// to the client that minted it, so pairing one with a mismatched User-Agent
+	// is itself a bot signal.
+	if req.Cookie != "" || sendBrowserIdentity(target) {
 		if req.UserAgent != "" {
 			args = append(args, "--user-agent", req.UserAgent)
 		}
@@ -213,7 +219,7 @@ func (m *Manager) ytDlpArgs(job *Job, tools config.Tools) []string {
 			args = append(args, "--add-header", "Cookie:"+req.Cookie)
 		}
 	} else {
-		log.Printf("job %s: YouTube - not forwarding browser UA/Referer/Cookie", job.ID)
+		log.Printf("job %s: YouTube and no allowlisted cookie - sending no browser identity", job.ID)
 	}
 
 	// "--" terminates option parsing: without it a URL beginning with "-"
@@ -578,8 +584,9 @@ func cleanMediaURL(raw string) string {
 	return raw
 }
 
-// sendBrowserIdentity reports whether the browser's UA/Referer/Cookie should be
-// forwarded to yt-dlp for this URL. See the block comment above.
+// sendBrowserIdentity reports whether the browser's UA and Referer should be
+// forwarded for this URL in the ABSENCE of a cookie. An explicitly allowlisted
+// cookie overrides this decision - see ytDlpArgs.
 func sendBrowserIdentity(raw string) bool {
 	return !isYouTubeURL(raw)
 }

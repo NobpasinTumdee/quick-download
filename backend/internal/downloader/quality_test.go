@@ -168,3 +168,67 @@ func TestBadSavePathFailsFast(t *testing.T) {
 		t.Fatal("expected Enqueue to reject a relative save path")
 	}
 }
+
+// TestCookiePolicy pins the interaction between the extension's allowlist and
+// the engine's YouTube handling. The extension decides whether a cookie exists;
+// the engine decides what to do with what it is given.
+func TestCookiePolicy(t *testing.T) {
+	mgr := NewManager(testConfig(t), nil)
+	tools := config.Tools{
+		YtDlp:  config.Tool{Path: filepath.Join(t.TempDir(), "yt-dlp"), Found: true},
+		Ffmpeg: config.Tool{Path: filepath.Join(t.TempDir(), "ffmpeg"), Found: true},
+	}
+	dir := t.TempDir()
+
+	withCookie := Request{UserAgent: "UA/1", Referrer: "https://page/", Cookie: "SID=abc"}
+	noCookie := Request{UserAgent: "UA/1", Referrer: "https://page/"}
+
+	cases := []struct {
+		name       string
+		url        string
+		req        Request
+		wantCookie bool
+		wantUA     bool
+	}{
+		{
+			// Default path: the allowlist collected nothing, so YouTube gets a
+			// clean request and its anti-bot check stays quiet.
+			name: "youtube without an allowlisted cookie sends no identity",
+			url:  "https://www.youtube.com/watch?v=abc", req: noCookie,
+			wantCookie: false, wantUA: false,
+		},
+		{
+			// The user deliberately allowlisted youtube.com; honour it, and send
+			// the matching UA so the identity is internally consistent.
+			name: "youtube with an allowlisted cookie sends all three",
+			url:  "https://www.youtube.com/watch?v=abc", req: withCookie,
+			wantCookie: true, wantUA: true,
+		},
+		{
+			name: "instagram with a cookie sends it",
+			url:  "https://www.instagram.com/reel/abc/", req: withCookie,
+			wantCookie: true, wantUA: true,
+		},
+		{
+			// Not allowlisted: the extension sent no cookie, but a normal site
+			// still needs the UA and Referer to serve its media.
+			name: "other sites keep UA and Referer without a cookie",
+			url:  "https://cdn.example.com/live/master.m3u8", req: noCookie,
+			wantCookie: false, wantUA: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			job := &Job{ID: "c", URL: tc.url, dir: dir, req: tc.req}
+			joined := strings.Join(mgr.ytDlpArgs(job, tools), " ")
+
+			if got := strings.Contains(joined, "Cookie:SID=abc"); got != tc.wantCookie {
+				t.Errorf("cookie present = %v, want %v\n%s", got, tc.wantCookie, joined)
+			}
+			if got := strings.Contains(joined, "--user-agent"); got != tc.wantUA {
+				t.Errorf("user-agent present = %v, want %v\n%s", got, tc.wantUA, joined)
+			}
+		})
+	}
+}

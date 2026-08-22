@@ -28,6 +28,7 @@
 import {
   classify,
   cleanPageUrl,
+  hostInList,
   youTubeThumbnail,
   youTubeVideoId,
   isSiteHost,
@@ -197,6 +198,35 @@ async function cookieHeaderFor(url: string): Promise<string> {
 }
 
 /**
+ * Cookies are only collected for domains the user has explicitly allowed.
+ *
+ * Forwarding a session cookie to a local process is the most sensitive thing
+ * this extension does, and for most sites it buys nothing: public media needs
+ * no credentials. Worse, on YouTube it actively breaks downloads by tripping
+ * the anti-bot check. So the default is to send none, and the allowlist names
+ * the few sites (Instagram, Facebook) where a login really is required.
+ *
+ * Both the media URL and the page it came from are checked: on Instagram the
+ * page is instagram.com while the file lives on cdninstagram.com, and the
+ * useful cookie belongs to the page.
+ */
+async function cookieFor(
+  settings: Settings,
+  downloadUrl: string,
+  pageUrl?: string,
+): Promise<string> {
+  const allowlist = settings.cookieAllowlist ?? [];
+  const targetAllowed = hostInList(downloadUrl, allowlist);
+  const pageAllowed = !!pageUrl && hostInList(pageUrl, allowlist);
+  if (!targetAllowed && !pageAllowed) return '';
+
+  // Prefer cookies scoped to the actual request; fall back to the page's.
+  const direct = targetAllowed ? await cookieHeaderFor(downloadUrl) : '';
+  if (direct) return direct;
+  return pageAllowed && pageUrl ? cookieHeaderFor(pageUrl) : '';
+}
+
+/**
  * Sends one URL to the engine, carrying the browser context (referrer, cookies,
  * user agent) so that protected media resolves the same way it did in the page.
  *
@@ -223,7 +253,7 @@ async function startDownload(
     url,
     filename: opts.filename,
     referrer: opts.pageUrl,
-    cookie: await cookieHeaderFor(url),
+    cookie: await cookieFor(settings, url, opts.pageUrl),
     userAgent: navigator.userAgent,
     kind: opts.kind ?? classify(url, opts.mime ?? ''),
     mime: opts.mime,
@@ -332,23 +362,22 @@ async function inspect(details: chrome.webRequest.WebResponseHeadersDetails): Pr
     const mime = header('content-type').split(';')[0].trim().toLowerCase();
     const size = Number.parseInt(header('content-length') || '0', 10) || 0;
 
-    // One gate for everything: telemetry, auth endpoints, ad traffic, stream
-    // segments, extractor-only CDNs and page URLs are all rejected here.
-    const decision = sniffDecision(details.url, mime);
+    const settings = await getSettings();
+
+    // One gate for everything: size floor, ad/telemetry hosts, stream segments,
+    // extractor-only CDNs and page URLs are all decided here.
+    const decision = sniffDecision(details.url, mime, size, {
+      smartFilter: settings.smartFilter !== false,
+      minBytes: Math.max(0, (settings.minFileSizeKB ?? 0) * 1024),
+      imageMinBytes: settings.minImageBytes ?? 0,
+      captureImages: settings.captureImages,
+      captureStreams: settings.captureStreams,
+    });
     if (!decision.keep) {
       console.debug('[quick-download] ignored (%s): %s', decision.reason, details.url);
       return;
     }
     const { streamType, kind } = decision;
-
-    const settings = await getSettings();
-    if (streamType !== 'direct') {
-      if (!settings.captureStreams) return;
-    } else if (kind === 'image') {
-      if (!settings.captureImages) return;
-      // Tiny images are sprites, avatars and tracking pixels: pure noise.
-      if (size === 0 || size < settings.minImageBytes) return;
-    }
 
     let pageUrl = '';
     let pageTitle = '';
@@ -690,6 +719,21 @@ chrome.runtime.onMessage.addListener((message: UiMessage, _sender, sendResponse)
           }),
         );
         break;
+
+      case 'clearAll': {
+        // Everything goes except the ids the popup says are still downloading:
+        // removing a row mid-transfer would orphan a job the user can no longer
+        // see, while the engine carries on writing the file.
+        const keep = new Set(message.keepIds);
+        const remaining = (await getItems()).filter((i) => {
+          if (keep.has(i.id)) return true;
+          return message.tabId !== undefined && i.tabId !== message.tabId;
+        });
+        await setItems(remaining);
+        await refreshBadge();
+        sendResponse({ ok: true });
+        break;
+      }
 
       case 'forget': {
         // Auto-cleanup and "Clear finished" both drop items from the store, so

@@ -21,6 +21,20 @@ import {
   sniffDecision,
 } from '../dist/filters.js';
 
+/**
+ * sniffDecision now takes the size and the user's filter settings. These tests
+ * are about URL shape, so they use a comfortably large size and the shipping
+ * defaults, keeping the focus on which URLs are accepted rather than on size.
+ */
+const OPTS = {
+  smartFilter: true,
+  minBytes: 500 * 1024,
+  imageMinBytes: 100 * 1024,
+  captureImages: true,
+  captureStreams: true,
+};
+const decide = (url, mime, size = 5 * 1024 * 1024) => sniffDecision(url, mime, size, OPTS);
+
 // ---------------------------------------------------------------------------
 // The URLs that actually showed up in the popup and started all this
 // ---------------------------------------------------------------------------
@@ -42,7 +56,7 @@ test('the reported YouTube garbage URLs are rejected', () => {
   ];
 
   for (const url of garbage) {
-    const decision = sniffDecision(url, 'application/json');
+    const decision = decide(url, 'application/json');
     assert.equal(decision.keep, false, `should have been rejected: ${url}`);
   }
 });
@@ -54,7 +68,7 @@ test('YouTube media CDN URLs are rejected — they are single-use and IP-locked'
   ];
   for (const url of cdn) {
     assert.equal(isExtractorOnlyHost(url), true, url);
-    assert.equal(sniffDecision(url, 'video/mp4').keep, false, url);
+    assert.equal(decide(url, 'video/mp4').keep, false, url);
   }
 });
 
@@ -72,7 +86,7 @@ test('genuine media is still captured', () => {
     ['https://cdn.example.com/playlist', 'application/x-mpegURL', 'hls', 'stream'],
   ];
   for (const [url, mime, streamType, kind] of cases) {
-    const d = sniffDecision(url, mime);
+    const d = decide(url, mime);
     assert.equal(d.keep, true, `should have been kept: ${url}`);
     assert.equal(d.streamType, streamType, url);
     assert.equal(d.kind, kind, url);
@@ -85,7 +99,7 @@ test('stream segments are still rejected', () => {
     'https://cdn.example.com/chunk_5.m4s',
     'https://cdn.example.com/sub.vtt',
   ]) {
-    assert.equal(sniffDecision(url, 'video/mp2t').keep, false, url);
+    assert.equal(decide(url, 'video/mp2t').keep, false, url);
   }
 });
 
@@ -93,7 +107,7 @@ test('a non-YouTube site keeps working normally', () => {
   // vimeo serves real progressive files; they must not be filtered as noise.
   const url = 'https://vod-progressive.akamaized.net/exp=123/video.mp4';
   assert.equal(isNoiseUrl(url), false);
-  assert.equal(sniffDecision(url, 'video/mp4').keep, true);
+  assert.equal(decide(url, 'video/mp4').keep, true);
 });
 
 // ---------------------------------------------------------------------------

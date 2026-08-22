@@ -100,6 +100,45 @@ const NOISE_PATH_RE = new RegExp(
  */
 const EXTRACTOR_ONLY_HOSTS = ['googlevideo.com', 'c.youtube.com'];
 
+/**
+ * Advertising and tracking networks. These never serve media the user wants,
+ * but unlike NOISE_HOSTS they do sometimes serve real video files (ad creatives),
+ * so they cannot be caught by the "not media" rule alone.
+ */
+const AD_HOSTS = [
+  'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
+  'adservice.google.com', 'adnxs.com', 'adsrvr.org', 'rubiconproject.com',
+  'pubmatic.com', 'criteo.com', 'criteo.net', 'taboola.com', 'outbrain.com',
+  'moatads.com', 'adform.net', 'casalemedia.com', 'openx.net',
+  'smartadserver.com', 'teads.tv', 'spotxchange.com', 'innovid.com',
+  'serving-sys.com', 'flashtalking.com', 'ad.doubleclick.net',
+  'amazon-adsystem.com', 'bidswitch.net', 'yieldmo.com',
+];
+
+/** True when a URL belongs to an advertising or tracking network. */
+export function isAdHost(url: string): boolean {
+  return hostMatches(hostOf(url), AD_HOSTS);
+}
+
+/** True when a host appears in a user-supplied allowlist. */
+export function hostInList(url: string, list: readonly string[]): boolean {
+  const host = hostOf(url);
+  if (!host) return false;
+  return list.some((raw) => {
+    const entry = raw.trim().toLowerCase().replace(/^\*\./, '').replace(/^www\./, '');
+    if (!entry) return false;
+    return host === entry || host.endsWith(`.${entry}`);
+  });
+}
+
+/** Parses the settings textarea: one domain per line, commas also accepted. */
+export function parseDomainList(raw: string): string[] {
+  return raw
+    .split(/[\s,]+/)
+    .map((d) => d.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, ''))
+    .filter((d) => d.length > 0 && d.includes('.'));
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).hostname.toLowerCase().replace(/^www\./, '');
@@ -253,20 +292,52 @@ export function kindFor(streamType: StreamType, mime: string, url: string): Medi
   return 'other';
 }
 
+/** Everything the sniffer needs to know from user settings. */
+export interface SniffOptions {
+  /** Reject ad/tracking/telemetry hosts and extractor-only CDNs. */
+  smartFilter: boolean;
+  /** Global floor in bytes. Only applied when the size is actually known. */
+  minBytes: number;
+  /** Extra floor for images, on top of minBytes. */
+  imageMinBytes: number;
+  captureImages: boolean;
+  captureStreams: boolean;
+}
+
+export type SniffDecision =
+  | { keep: false; reason: string }
+  | { keep: true; streamType: StreamType; kind: MediaKind };
+
 /**
  * The single decision the sniffer asks about every response.
  *
- * Returning a reason (rather than a bare boolean) keeps the "why did my video
- * not show up" question answerable from the service worker log.
+ * Returning a reason rather than a bare boolean keeps "why did my video not
+ * show up" answerable from the service worker log.
+ *
+ * Two rules are deliberately NOT behind the smart filter, because they are
+ * structural rather than a matter of taste:
+ *
+ *   - stream segments can never be downloaded on their own, and
+ *   - a watch page is already offered as the tab's own entry.
+ *
+ * Note that turning the smart filter off does not flood the list with beacons:
+ * telemetry endpoints answer with JSON, which fails the "is this media" test
+ * regardless.
  */
 export function sniffDecision(
   url: string,
   mime: string,
-): { keep: false; reason: string } | { keep: true; streamType: StreamType; kind: MediaKind } {
+  size: number,
+  options: SniffOptions,
+): SniffDecision {
   if (!/^https?:/i.test(url)) return { keep: false, reason: 'not http(s)' };
-  if (isNoiseUrl(url)) return { keep: false, reason: 'telemetry/auth/ad endpoint' };
   if (SEGMENT_EXT_RE.test(url)) return { keep: false, reason: 'stream segment' };
-  if (isExtractorOnlyHost(url)) return { keep: false, reason: 'extractor-only CDN' };
+
+  if (options.smartFilter) {
+    if (isNoiseUrl(url)) return { keep: false, reason: 'telemetry/auth endpoint' };
+    if (isAdHost(url)) return { keep: false, reason: 'ad/tracking network' };
+    if (isExtractorOnlyHost(url)) return { keep: false, reason: 'extractor-only CDN' };
+  }
 
   const streamType = classify(url, mime);
 
@@ -276,12 +347,34 @@ export function sniffDecision(
   if (streamType === 'site') return { keep: false, reason: 'page URL, offered via the tab entry' };
 
   const kind = kindFor(streamType, mime, url);
-  if (streamType === 'direct' && kind === 'other') {
-    return { keep: false, reason: 'not media' };
+
+  if (streamType !== 'direct') {
+    if (!options.captureStreams) return { keep: false, reason: 'stream capture disabled' };
+    // A manifest is a few hundred bytes of text that stands for a whole movie.
+    // Applying a file-size floor to it would filter out every stream there is.
+    return { keep: true, streamType, kind };
+  }
+
+  if (kind === 'other') return { keep: false, reason: 'not media' };
+
+  if (kind === 'image') {
+    if (!options.captureImages) return { keep: false, reason: 'image capture disabled' };
+    const floor = Math.max(options.minBytes, options.imageMinBytes);
+    if (size > 0 && size < floor) return { keep: false, reason: `image below ${floor} bytes` };
+    // An image of unknown size is almost always a tracking pixel or a lazily
+    // streamed sprite, so images alone are required to declare a size.
+    if (size === 0) return { keep: false, reason: 'image of unknown size' };
+    return { keep: true, streamType, kind };
+  }
+
+  // Audio and video. Chunked responses carry no Content-Length, and dropping
+  // every unsized video would lose exactly the long ones worth keeping, so the
+  // floor only applies when the server actually told us the size.
+  if (size > 0 && size < options.minBytes) {
+    return { keep: false, reason: `below the ${Math.round(options.minBytes / 1024)} KB floor` };
   }
   return { keep: true, streamType, kind };
 }
-
 
 /**
  * Extracts the video id from any YouTube URL shape: /watch?v=, youtu.be/,

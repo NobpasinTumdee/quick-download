@@ -6,6 +6,7 @@
  * button. Everything below is shared.
  */
 
+import { parseDomainList } from './filters.js';
 import { ProgressFeed, normaliseUrl, type ProgressMap } from './progress.js';
 import {
   AUTO_CLEANUP_DELAY_MS,
@@ -425,7 +426,23 @@ async function loadSettings(): Promise<Settings | undefined> {
   $<HTMLInputElement>('set-autoclean').checked = s.autoCleanup !== false;
   $<HTMLInputElement>('set-savepath').value = s.savePath ?? '';
   showPathStatus(s.savePath ?? '');
+  $<HTMLInputElement>('set-smart').checked = s.smartFilter !== false;
+  $<HTMLInputElement>('set-minsize').value = String(s.minFileSizeKB ?? 0);
+  $<HTMLTextAreaElement>('set-cookies').value = (s.cookieAllowlist ?? []).join('\n');
+  showCookieStatus(s.cookieAllowlist ?? []);
   return s;
+}
+
+/** Spells out what the allowlist means, since it governs credential sharing. */
+function showCookieStatus(domains: readonly string[]): void {
+  const status = $<HTMLSpanElement>('cookie-status');
+  if (!domains.length) {
+    status.className = 'path-status good';
+    status.textContent = 'No cookies are sent anywhere.';
+    return;
+  }
+  status.className = 'path-status';
+  status.textContent = `Cookies are sent only to: ${domains.join(', ')}.`;
 }
 
 /**
@@ -470,9 +487,26 @@ $<HTMLButtonElement>('refresh').addEventListener('click', async (event) => {
 });
 
 $<HTMLButtonElement>('clear').addEventListener('click', async () => {
-  await ask({ kind: 'clear', tabId: scope === 'tab' ? currentTabId : undefined });
-  startedJobs.clear();
-  void refresh();
+  // Anything the engine is still working on stays: hiding a row mid-transfer
+  // would leave a job running that the user can no longer see or cancel.
+  const active = items.filter((item) => {
+    const job = jobFor(item);
+    return job !== undefined && ACTIVE_STATES.has(job.state);
+  });
+  const keepIds = active.map((item) => item.id);
+
+  clearCleanupTimers();
+  for (const id of [...startedJobs.keys()]) {
+    if (!keepIds.includes(id)) startedJobs.delete(id);
+  }
+
+  await ask({
+    kind: 'clearAll',
+    tabId: scope === 'tab' ? currentTabId : undefined,
+    keepIds,
+  });
+  items = active;
+  render();
 });
 
 $<HTMLButtonElement>('dashboard').addEventListener('click', () => {
@@ -542,6 +576,29 @@ $<HTMLButtonElement>('clear-finished').addEventListener('click', async () => {
     })
     .map((item) => item.id);
   await forget(done);
+});
+
+$<HTMLTextAreaElement>('set-cookies').addEventListener('change', (e) => {
+  const cookieAllowlist = parseDomainList((e.target as HTMLTextAreaElement).value);
+  if (settings) settings.cookieAllowlist = cookieAllowlist;
+  // Write the cleaned list back so the user sees exactly what was stored.
+  (e.target as HTMLTextAreaElement).value = cookieAllowlist.join('\n');
+  showCookieStatus(cookieAllowlist);
+  void ask({ kind: 'setSettings', settings: { cookieAllowlist } });
+});
+
+$<HTMLInputElement>('set-smart').addEventListener('change', (e) => {
+  const smartFilter = (e.target as HTMLInputElement).checked;
+  if (settings) settings.smartFilter = smartFilter;
+  void ask({ kind: 'setSettings', settings: { smartFilter } });
+});
+
+$<HTMLInputElement>('set-minsize').addEventListener('change', (e) => {
+  const input = e.target as HTMLInputElement;
+  const minFileSizeKB = Math.max(0, Math.round(Number(input.value) || 0));
+  input.value = String(minFileSizeKB);
+  if (settings) settings.minFileSizeKB = minFileSizeKB;
+  void ask({ kind: 'setSettings', settings: { minFileSizeKB } });
 });
 
 $<HTMLSelectElement>('set-quality').addEventListener('change', (e) => {

@@ -592,6 +592,11 @@ func TestCleanMediaURL(t *testing.T) {
 // TestBrowserHeadersOnlyForNonYouTube is the regression guard for
 // "ERROR: [youtube] ... The page needs to be reloaded": forwarding the
 // browser's cookie/UA to yt-dlp is what triggers YouTube's anti-bot check.
+//
+// Since the cookie allowlist landed, the extension decides whether a cookie is
+// collected at all, and youtube.com is not on it by default. So the guard is
+// now about the DEFAULT path: no cookie collected means no identity forwarded.
+// TestCookiePolicy covers what happens when a user allowlists YouTube anyway.
 func TestBrowserHeadersOnlyForNonYouTube(t *testing.T) {
 	cfg := testConfig(t)
 	mgr := NewManager(cfg, nil)
@@ -604,9 +609,12 @@ func TestBrowserHeadersOnlyForNonYouTube(t *testing.T) {
 		Referrer:  "https://example.com/watch",
 		Cookie:    "SID=secret; HSID=alsosecret",
 	}
+	// What the extension actually sends for YouTube: the allowlist collected
+	// nothing, so the cookie field is empty.
+	reqNoCookie := Request{UserAgent: req.UserAgent, Referrer: req.Referrer}
 
 	t.Run("youtube sends none of them", func(t *testing.T) {
-		job := &Job{ID: "y", URL: "https://www.youtube.com/watch?v=abc&list=RDabc", req: req}
+		job := &Job{ID: "y", URL: "https://www.youtube.com/watch?v=abc&list=RDabc", req: reqNoCookie}
 		args := strings.Join(mgr.ytDlpArgs(job, tools), " ")
 		for _, forbidden := range []string{"--user-agent", "--referer", "--add-header", "secret"} {
 			if strings.Contains(args, forbidden) {

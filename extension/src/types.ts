@@ -142,6 +142,7 @@ export type UiMessage =
   | { kind: 'list'; tabId?: number; withThumbnails?: boolean }
   | { kind: 'download'; item: MediaItem; quality?: Quality }
   | { kind: 'forget'; ids: string[] }
+  | { kind: 'clearAll'; tabId?: number; keepIds: string[] }
   | { kind: 'downloadUrl'; url: string; pageUrl?: string }
   | { kind: 'downloadPage'; tabId: number }
   | { kind: 'clear'; tabId?: number }
@@ -171,6 +172,15 @@ export interface Settings {
   captureThumbnails: boolean;
   /** Absolute folder to save into. Empty means the engine's default. */
   savePath: string;
+  /**
+   * Domains whose cookies may be forwarded to the engine. Everything else
+   * downloads without credentials.
+   */
+  cookieAllowlist: string[];
+  /** Global floor, in KB. Media of a known smaller size is ignored. */
+  minFileSizeKB: number;
+  /** Reject known ad/tracking/telemetry hosts and extractor-only CDNs. */
+  smartFilter: boolean;
   /** Default selection in the per-item quality dropdown. */
   defaultQuality: Quality;
   /** Show a Chrome notification when a download finishes. */
@@ -188,6 +198,10 @@ export const DEFAULT_SETTINGS: Settings = {
   captureStreams: true,
   captureThumbnails: true,
   savePath: '',
+  // Sites where a login is genuinely required to reach the media at all.
+  cookieAllowlist: ['instagram.com', 'facebook.com'],
+  minFileSizeKB: 500,
+  smartFilter: true,
   defaultQuality: 'best',
   notifyOnComplete: true,
   autoCleanup: true,

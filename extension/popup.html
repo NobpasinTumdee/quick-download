@@ -62,7 +62,8 @@
         aria-label="Rescan">↻</button>
       <button id="clear-finished" class="btn ghost tiny" title="Remove completed downloads from this list">Clear
         finished</button>
-      <button id="clear" class="btn ghost tiny">Clear</button>
+      <button id="clear" class="btn ghost tiny" title="Remove everything except active downloads">Clear
+        all</button>
     </div>
   </div>
 
@@ -85,6 +86,17 @@
         <span>Sniff HLS / DASH streams</span>
       </label>
       <label class="row">
+        <input type="checkbox" id="set-smart" />
+        <span>Smart domain filter <em>(ads, trackers, expiring CDNs)</em></span>
+      </label>
+      <label class="row select-row">
+        <span>Minimum file size</span>
+        <span class="number-field">
+          <input type="number" id="set-minsize" min="0" max="1048576" step="50" />
+          <span class="unit">KB</span>
+        </span>
+      </label>
+      <label class="row">
         <input type="checkbox" id="set-thumbs" />
         <span>Generate thumbnails</span>
       </label>
@@ -104,6 +116,12 @@
           <option value="720p">720p</option>
           <option value="audio">Audio only</option>
         </select>
+      </label>
+      <label class="row path-row">
+        <span>Send cookies to these domains only</span>
+        <textarea id="set-cookies" rows="2" spellcheck="false" autocomplete="off"
+          placeholder="instagram.com&#10;facebook.com"></textarea>
+        <span class="path-status" id="cookie-status"></span>
       </label>
       <label class="row path-row">
         <span>Save to</span>
