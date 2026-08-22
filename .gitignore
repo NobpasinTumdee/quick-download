@@ -21,3 +21,6 @@ extension/_metadata/
 .idea/
 Thumbs.db
 .DS_Store
+
+
+extension.pem
