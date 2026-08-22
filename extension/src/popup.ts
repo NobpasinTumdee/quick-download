@@ -7,15 +7,18 @@
  */
 
 import { ProgressFeed, normaliseUrl, type ProgressMap } from './progress.js';
-import type {
-  EngineInfo,
-  HostResponse,
-  JobProgress,
-  MediaItem,
-  MediaKind,
-  Settings,
-  ThemePreference,
-  UiMessage,
+import {
+  AUTO_CLEANUP_DELAY_MS,
+  QUALITY_LABELS,
+  type EngineInfo,
+  type HostResponse,
+  type JobProgress,
+  type MediaItem,
+  type MediaKind,
+  type Quality,
+  type Settings,
+  type ThemePreference,
+  type UiMessage,
 } from './types.js';
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
@@ -42,6 +45,45 @@ let feed: ProgressFeed | null = null;
 
 /** Job ids for downloads started from this popup, so they match immediately. */
 const startedJobs = new Map<string, string>();
+
+/** Live settings, refreshed whenever storage changes. */
+let settings: Settings | undefined;
+
+/** Pending auto-cleanup timers, keyed by item id, so they can be cancelled. */
+const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Job ids we have already notified about.
+ *
+ * The engine keeps broadcasting a completed job for as long as it stays in the
+ * list, so without this every snapshot would fire another notification. It
+ * lives in session storage rather than memory because the popup is destroyed
+ * and rebuilt constantly - an in-memory set would re-notify on every reopen.
+ */
+const NOTIFIED_KEY = 'notifiedJobs';
+let notified = new Set<string>();
+
+async function loadNotified(): Promise<void> {
+  try {
+    const bag = await chrome.storage.session.get(NOTIFIED_KEY);
+    notified = new Set((bag[NOTIFIED_KEY] as string[]) ?? []);
+  } catch {
+    notified = new Set();
+  }
+}
+
+async function rememberNotified(id: string): Promise<void> {
+  notified.add(id);
+  try {
+    // Keep the tail only: this set exists to suppress duplicates, not to be a
+    // history, and session storage has a quota to respect.
+    const trimmed = [...notified].slice(-200);
+    notified = new Set(trimmed);
+    await chrome.storage.session.set({ [NOTIFIED_KEY]: trimmed });
+  } catch {
+    /* a failed write only risks a duplicate notification */
+  }
+}
 
 /** Promise wrapper around chrome.runtime.sendMessage. */
 function ask<T>(message: UiMessage): Promise<T> {
@@ -149,11 +191,32 @@ function render(): void {
     q<HTMLParagraphElement>('[data-name]').title = item.url;
     q<HTMLParagraphElement>('[data-sub]').textContent = subtitle(item);
 
+    // The quality picker only appears for items yt-dlp handles. A direct file
+    // URL has exactly one representation, so offering resolutions there would
+    // promise something the engine cannot deliver.
+    const quality = q<HTMLSelectElement>('[data-quality]');
+    if (item.kind === 'stream') {
+      quality.replaceChildren(
+        ...QUALITY_LABELS.map(({ value, label }) => {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = label;
+          return option;
+        }),
+      );
+      quality.value = settings?.defaultQuality ?? 'best';
+      quality.hidden = false;
+    }
+
     const btn = q<HTMLButtonElement>('[data-download]');
     btn.addEventListener('click', async () => {
       btn.disabled = true;
       btn.textContent = '…';
-      const res = await ask<HostResponse>({ kind: 'download', item });
+      const res = await ask<HostResponse>({
+        kind: 'download',
+        item,
+        quality: quality.hidden ? undefined : (quality.value as Quality),
+      });
       if (res?.ok) {
         if (res.jobId) startedJobs.set(item.id, res.jobId);
         btn.textContent = 'Queued';
@@ -217,8 +280,75 @@ function repaintProgressOnly(): void {
   const nodes = el.list.querySelectorAll('li');
   nodes.forEach((node, index) => {
     const item = items[index];
-    if (item) paintProgress(node as HTMLElement, item);
+    if (!item) return;
+    paintProgress(node as HTMLElement, item);
+    void handleCompletion(item, node as HTMLElement);
   });
+}
+
+/**
+ * Fires the completion notification once, then schedules auto-cleanup.
+ *
+ * Notifications are raised here rather than in the service worker because the
+ * WebSocket lives in this document. That means they only appear while the popup
+ * or side panel is open - which is exactly what the side panel is for. Moving
+ * them to the worker would need it to hold the socket open permanently.
+ */
+async function handleCompletion(item: MediaItem, node: HTMLElement): Promise<void> {
+  const job = jobFor(item);
+  if (!job || job.state !== 'completed') return;
+  if (notified.has(job.id)) return;
+
+  await rememberNotified(job.id);
+
+  if (settings?.notifyOnComplete !== false) {
+    try {
+      chrome.notifications.create(`qd-${job.id}`, {
+        type: 'basic',
+        iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+        title: 'Download complete',
+        message: job.filename || item.filename,
+        silent: false,
+      });
+    } catch (err) {
+      console.debug('[quick-download] notification failed', err);
+    }
+  }
+
+  if (settings?.autoCleanup !== false) scheduleCleanup(item, node);
+}
+
+function scheduleCleanup(item: MediaItem, node: HTMLElement): void {
+  if (cleanupTimers.has(item.id)) return;
+  const timer = setTimeout(() => {
+    cleanupTimers.delete(item.id);
+    // Animate out, then drop it from both the list and the store.
+    node.classList.add('leaving');
+    setTimeout(() => void forget([item.id]), 260);
+  }, AUTO_CLEANUP_DELAY_MS);
+  cleanupTimers.set(item.id, timer);
+}
+
+/** Removes items from the store and re-renders. */
+async function forget(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  for (const id of ids) {
+    const timer = cleanupTimers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      cleanupTimers.delete(id);
+    }
+    startedJobs.delete(id);
+  }
+  await ask({ kind: 'forget', ids });
+  items = items.filter((i) => !ids.includes(i.id));
+  render();
+}
+
+/** Cancels every pending cleanup timer; used when the popup goes away. */
+function clearCleanupTimers(): void {
+  for (const timer of cleanupTimers.values()) clearTimeout(timer);
+  cleanupTimers.clear();
 }
 
 // --------------------------------------------------------------------- theming
@@ -282,6 +412,7 @@ function applyEnabled(enabled: boolean): void {
 async function loadSettings(): Promise<Settings | undefined> {
   const s = await ask<Settings>({ kind: 'getSettings' });
   if (!s) return undefined;
+  settings = s;
   applyEnabled(s.enabled !== false);
   applyTheme(s.theme ?? 'system');
   $<HTMLInputElement>('set-intercept').checked = s.interceptChromeDownloads;
@@ -289,7 +420,31 @@ async function loadSettings(): Promise<Settings | undefined> {
   $<HTMLInputElement>('set-streams').checked = s.captureStreams;
   $<HTMLInputElement>('set-thumbs').checked = s.captureThumbnails;
   $<HTMLSelectElement>('set-minimage').value = String(s.minImageBytes);
+  $<HTMLSelectElement>('set-quality').value = s.defaultQuality ?? 'best';
+  $<HTMLInputElement>('set-notify').checked = s.notifyOnComplete !== false;
+  $<HTMLInputElement>('set-autoclean').checked = s.autoCleanup !== false;
+  $<HTMLInputElement>('set-savepath').value = s.savePath ?? '';
+  showPathStatus(s.savePath ?? '');
   return s;
+}
+
+/**
+ * The engine is the authority on whether a path works - it has to create and
+ * write to it - so this is only a shape check to catch obvious typos early.
+ */
+function showPathStatus(path: string): void {
+  const status = $<HTMLSpanElement>('path-status');
+  const value = path.trim();
+  if (!value) {
+    status.className = 'path-status';
+    status.textContent = '';
+    return;
+  }
+  const absolute = /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('/') || value.startsWith('\\\\');
+  status.className = `path-status ${absolute ? 'good' : 'bad'}`;
+  status.textContent = absolute
+    ? 'Saved. The engine creates this folder if it is missing.'
+    : 'Use an absolute path, e.g. D:\\Media\\Downloads';
 }
 
 // ------------------------------------------------------------------- listeners
@@ -377,6 +532,50 @@ for (const [id, key] of toggles) {
   });
 }
 
+$<HTMLButtonElement>('clear-finished').addEventListener('click', async () => {
+  // Anything the engine reports as finished, including items whose auto-cleanup
+  // never ran because the popup was closed at the time.
+  const done = items
+    .filter((item) => {
+      const job = jobFor(item);
+      return job && (job.state === 'completed' || job.state === 'canceled');
+    })
+    .map((item) => item.id);
+  await forget(done);
+});
+
+$<HTMLSelectElement>('set-quality').addEventListener('change', (e) => {
+  const defaultQuality = (e.target as HTMLSelectElement).value as Quality;
+  if (settings) settings.defaultQuality = defaultQuality;
+  void ask({ kind: 'setSettings', settings: { defaultQuality } });
+  render();
+});
+
+$<HTMLInputElement>('set-savepath').addEventListener('change', (e) => {
+  const savePath = (e.target as HTMLInputElement).value.trim();
+  if (settings) settings.savePath = savePath;
+  showPathStatus(savePath);
+  void ask({ kind: 'setSettings', settings: { savePath } });
+});
+
+$<HTMLInputElement>('set-savepath').addEventListener('input', (e) => {
+  showPathStatus((e.target as HTMLInputElement).value);
+});
+
+for (const [id, key] of [
+  ['set-notify', 'notifyOnComplete'],
+  ['set-autoclean', 'autoCleanup'],
+] as Array<[string, keyof Settings]>) {
+  $<HTMLInputElement>(id).addEventListener('change', (e) => {
+    const value = (e.target as HTMLInputElement).checked;
+    if (settings) (settings as unknown as Record<string, unknown>)[key] = value;
+    void ask({ kind: 'setSettings', settings: { [key]: value } as Partial<Settings> });
+  });
+}
+
+// Pending cleanup timers must not outlive the document.
+addEventListener('pagehide', clearCleanupTimers);
+
 $<HTMLSelectElement>('set-minimage').addEventListener('change', (e) => {
   void ask({
     kind: 'setSettings',
@@ -390,6 +589,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local' || !changes.settings) return;
   const next = changes.settings.newValue as Settings | undefined;
   if (!next) return;
+  settings = next;
   applyEnabled(next.enabled !== false);
   applyTheme(next.theme ?? 'system');
 });
@@ -402,9 +602,10 @@ void (async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTabId = tab?.id;
 
-  const settings = await loadSettings();
+  await loadNotified();
+  const loaded = await loadSettings();
   await checkEngine();
   // A first paint that includes a thumbnail scan is the whole point of the
   // popup — but not while sniffing is switched off.
-  await refresh(settings?.enabled !== false);
+  await refresh(loaded?.enabled !== false);
 })();

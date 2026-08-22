@@ -108,6 +108,13 @@ func (m *Manager) Enqueue(req Request) (*Job, error) {
 		return nil, fmt.Errorf("unsupported or malformed URL: %q", req.URL)
 	}
 
+	// A bad save path must fail loudly here rather than silently writing the
+	// file somewhere the user is not expecting.
+	dir, err := resolveDownloadDir(m.cfg.DownloadDir, req.SavePath)
+	if err != nil {
+		return nil, err
+	}
+
 	// Classify up front so the dashboard can show the right engine badge while
 	// the job is still queued.
 	kind := Classify(u.String(), req.Mime, req.Kind)
@@ -121,6 +128,7 @@ func (m *Manager) Enqueue(req Request) (*Job, error) {
 		filename:  sanitizeFilename(req.Filename),
 		engine:    kind.Engine(),
 		kind:      kind,
+		dir:       dir,
 		title:     strings.TrimSpace(req.Title),
 	}
 	job.ext.percent = -1

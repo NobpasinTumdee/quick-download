@@ -36,6 +36,13 @@ type Request struct {
 	Mime string `json:"mime,omitempty"`
 	// Title is the page/media title, used to name streaming downloads.
 	Title string `json:"title,omitempty"`
+	// Quality selects the yt-dlp format: "", "best", "1080p", "720p", "audio".
+	// It is meaningless for the chunked HTTP engine, where a direct file has
+	// exactly one representation.
+	Quality string `json:"quality,omitempty"`
+	// SavePath overrides the configured download directory for this job only.
+	// Must be absolute; it is validated (and created) at enqueue time.
+	SavePath string `json:"savePath,omitempty"`
 	// UserAgent should mirror the browser's UA so that servers which gate on
 	// it hand us the same bytes they handed the page.
 	UserAgent string `json:"userAgent,omitempty"`
@@ -83,8 +90,11 @@ type Job struct {
 	// Engine dispatch and streaming metadata.
 	engine string // EngineHTTP or EngineYtDlp
 	kind   Kind
-	title  string
-	phase  string
+	// dir is the resolved output directory: the configured default, or the
+	// per-job SavePath once it has been validated.
+	dir   string
+	title string
+	phase string
 
 	// External progress, owned by the yt-dlp engine. When engine != http these
 	// values are authoritative and the chunk counters stay empty, because a
@@ -350,6 +360,8 @@ type JobSnapshot struct {
 	Error       string          `json:"error,omitempty"`
 	Mime        string          `json:"mime,omitempty"`
 	Engine      string          `json:"engine"`
+	Dir         string          `json:"dir,omitempty"`
+	Quality     string          `json:"quality,omitempty"`
 	Kind        string          `json:"kind"`
 	Title       string          `json:"title,omitempty"`
 	Phase       string          `json:"phase,omitempty"`
@@ -374,6 +386,8 @@ func (j *Job) Snapshot() JobSnapshot {
 		ID:          j.ID,
 		URL:         j.URL,
 		Engine:      j.engine,
+		Dir:         j.dir,
+		Quality:     j.req.Quality,
 		Kind:        string(j.kind),
 		Title:       j.title,
 		Phase:       j.phase,
@@ -442,4 +456,17 @@ func (j *Job) Snapshot() JobSnapshot {
 		}
 	}
 	return s
+}
+
+// Dir is the directory this job writes into.
+func (j *Job) Dir() string {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.dir
+}
+
+// TempDir is where .part files live. It sits inside the destination directory
+// so the final merge is a same-volume operation rather than a cross-drive copy.
+func (j *Job) TempDir() string {
+	return filepath.Join(j.Dir(), ".qd-parts")
 }

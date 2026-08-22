@@ -60,6 +60,8 @@
     <div class="toolbar-actions">
       <button id="refresh" class="btn ghost tiny icon-btn" title="Re-scan the page for thumbnails"
         aria-label="Rescan">↻</button>
+      <button id="clear-finished" class="btn ghost tiny" title="Remove completed downloads from this list">Clear
+        finished</button>
       <button id="clear" class="btn ghost tiny">Clear</button>
     </div>
   </div>
@@ -93,6 +95,29 @@
       <label class="row">
         <input type="checkbox" id="set-images" />
         <span>Detect images</span>
+      </label>
+      <label class="row select-row">
+        <span>Default quality</span>
+        <select id="set-quality">
+          <option value="best">Best</option>
+          <option value="1080p">1080p</option>
+          <option value="720p">720p</option>
+          <option value="audio">Audio only</option>
+        </select>
+      </label>
+      <label class="row path-row">
+        <span>Save to</span>
+        <input type="text" id="set-savepath" spellcheck="false" autocomplete="off"
+          placeholder="Engine default (~/Downloads)" />
+        <span class="path-status" id="path-status"></span>
+      </label>
+      <label class="row">
+        <input type="checkbox" id="set-notify" />
+        <span>Notify when a download finishes</span>
+      </label>
+      <label class="row">
+        <input type="checkbox" id="set-autoclean" />
+        <span>Remove finished items after 5s</span>
       </label>
       <label class="row select-row">
         <span>Ignore images under</span>
@@ -129,7 +154,10 @@
           </div>
         </div>
       </div>
-      <button class="btn primary tiny" data-download>Download</button>
+      <div class="item-actions">
+        <select class="quality" data-quality title="Choose a resolution" aria-label="Quality" hidden></select>
+        <button class="btn primary tiny" data-download>Download</button>
+      </div>
     </li>
   </template>
 

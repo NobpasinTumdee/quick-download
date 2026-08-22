@@ -44,6 +44,7 @@ import {
   type HostResponse,
   type MediaItem,
   type MediaKind,
+  type Quality,
   type EngineInfo,
   type ScanResult,
   type Settings,
@@ -210,8 +211,13 @@ async function startDownload(
     kind?: StreamType;
     mime?: string;
     title?: string;
+    quality?: Quality;
   } = {},
 ): Promise<HostResponse> {
+  // The save path is a user setting rather than a per-call argument: it applies
+  // to every download, including ones started from the context menu.
+  const settings = await getSettings();
+
   const response = await sendToHost({
     type: 'download',
     url,
@@ -222,6 +228,8 @@ async function startDownload(
     kind: opts.kind ?? classify(url, opts.mime ?? ''),
     mime: opts.mime,
     title: opts.title,
+    quality: opts.quality ?? settings.defaultQuality,
+    savePath: settings.savePath?.trim() || undefined,
     requestId: crypto.randomUUID(),
   });
 
@@ -678,9 +686,21 @@ chrome.runtime.onMessage.addListener((message: UiMessage, _sender, sendResponse)
             kind: message.item.streamType,
             mime: message.item.mime,
             title: message.item.pageTitle || message.item.filename,
+            quality: message.quality,
           }),
         );
         break;
+
+      case 'forget': {
+        // Auto-cleanup and "Clear finished" both drop items from the store, so
+        // they do not reappear the next time the popup is opened.
+        const drop = new Set(message.ids);
+        const remaining = (await getItems()).filter((i) => !drop.has(i.id));
+        await setItems(remaining);
+        await refreshBadge();
+        sendResponse({ ok: true });
+        break;
+      }
 
       case 'downloadUrl': {
         // A pasted YouTube link usually carries &list= from the address bar.

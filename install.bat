@@ -24,14 +24,14 @@ if %ERRORLEVEL% neq 0 (
     exit /b %ERRORLEVEL%
 )
 
-echo.
-echo [2/3] Downloading External Tools (yt-dlp, ffmpeg)...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "cd tools; .\get-tools.ps1"
-if %ERRORLEVEL% neq 0 (
-    echo [ERROR] Failed to download tools.
-    pause
-    exit /b %ERRORLEVEL%
-)
+@REM echo.
+@REM echo [2/3] Downloading External Tools (yt-dlp, ffmpeg)...
+@REM powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "cd tools; .\get-tools.ps1"
+@REM if %ERRORLEVEL% neq 0 (
+@REM     echo [ERROR] Failed to download tools.
+@REM     pause
+@REM     exit /b %ERRORLEVEL%
+@REM )
 
 echo.
 echo [3/3] Registering Native Messaging Host...

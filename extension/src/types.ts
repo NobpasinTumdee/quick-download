@@ -9,6 +9,19 @@ export const NATIVE_HOST = 'com.downloader.app';
  */
 export type StreamType = 'direct' | 'hls' | 'dash' | 'site';
 
+/**
+ * Resolution / format choice, applied by yt-dlp. It has no meaning for the
+ * chunked HTTP engine: a direct file URL has exactly one representation.
+ */
+export type Quality = 'best' | '1080p' | '720p' | 'audio';
+
+export const QUALITY_LABELS: ReadonlyArray<{ value: Quality; label: string }> = [
+  { value: 'best', label: 'Best' },
+  { value: '1080p', label: '1080p' },
+  { value: '720p', label: '720p' },
+  { value: 'audio', label: 'Audio only' },
+];
+
 /** What the item is, for icons and grouping in the UI. */
 export type MediaKind = 'video' | 'audio' | 'image' | 'stream' | 'other';
 
@@ -24,6 +37,10 @@ export interface HostRequest {
   kind?: StreamType;
   mime?: string;
   title?: string;
+  /** Format selector; omitted means "best". */
+  quality?: Quality;
+  /** Absolute directory override for this job. */
+  savePath?: string;
   requestId?: string;
 }
 
@@ -123,7 +140,8 @@ export interface EngineInfo {
 /** Messages exchanged between the popup and the service worker. */
 export type UiMessage =
   | { kind: 'list'; tabId?: number; withThumbnails?: boolean }
-  | { kind: 'download'; item: MediaItem }
+  | { kind: 'download'; item: MediaItem; quality?: Quality }
+  | { kind: 'forget'; ids: string[] }
   | { kind: 'downloadUrl'; url: string; pageUrl?: string }
   | { kind: 'downloadPage'; tabId: number }
   | { kind: 'clear'; tabId?: number }
@@ -151,6 +169,14 @@ export interface Settings {
   captureStreams: boolean;
   /** Grab thumbnails by injecting the page scanner when the popup opens. */
   captureThumbnails: boolean;
+  /** Absolute folder to save into. Empty means the engine's default. */
+  savePath: string;
+  /** Default selection in the per-item quality dropdown. */
+  defaultQuality: Quality;
+  /** Show a Chrome notification when a download finishes. */
+  notifyOnComplete: boolean;
+  /** Drop finished items from the list a few seconds after they complete. */
+  autoCleanup: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -161,4 +187,11 @@ export const DEFAULT_SETTINGS: Settings = {
   captureImages: true,
   captureStreams: true,
   captureThumbnails: true,
+  savePath: '',
+  defaultQuality: 'best',
+  notifyOnComplete: true,
+  autoCleanup: true,
 };
+
+/** How long a finished item stays visible before auto-cleanup removes it. */
+export const AUTO_CLEANUP_DELAY_MS = 5000;

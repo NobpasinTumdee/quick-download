@@ -152,6 +152,9 @@ type hostRequest struct {
 	Kind  string `json:"kind,omitempty"`
 	Mime  string `json:"mime,omitempty"`
 	Title string `json:"title,omitempty"`
+	// Quality picker and per-job output directory, both chosen in the popup.
+	Quality  string `json:"quality,omitempty"`
+	SavePath string `json:"savePath,omitempty"`
 }
 
 // hostResponse is what we send back. Chrome delivers it to the extension's
@@ -289,6 +292,8 @@ func enqueue(cfg *config.Config, client *http.Client, req hostRequest) (string, 
 		Kind:      req.Kind,
 		Mime:      req.Mime,
 		Title:     req.Title,
+		Quality:   req.Quality,
+		SavePath:  req.SavePath,
 	})
 	if err != nil {
 		return "", err

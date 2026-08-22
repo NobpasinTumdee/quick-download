@@ -79,7 +79,7 @@ func (m *Manager) execute(parent context.Context, job *Job) {
 	}
 	job.mu.Unlock()
 
-	finalPath, err := uniquePath(m.cfg.DownloadDir, job.filenameOrDefault())
+	finalPath, err := uniquePath(job.Dir(), job.filenameOrDefault())
 	if err != nil {
 		job.fail(err)
 		return
@@ -251,7 +251,7 @@ func (m *Manager) downloadChunked(ctx context.Context, job *Job, size int64) err
 	job.chunks = chunks
 	job.mu.Unlock()
 
-	if err := os.MkdirAll(m.cfg.TempDir, 0o755); err != nil {
+	if err := os.MkdirAll(job.TempDir(), 0o755); err != nil {
 		return fmt.Errorf("cannot create temp dir: %w", err)
 	}
 
@@ -497,7 +497,7 @@ func (m *Manager) downloadSingle(ctx context.Context, job *Job, size int64) erro
 // ---------------------------------------------------------------------------
 
 func (m *Manager) partPath(job *Job, index int) string {
-	return filepath.Join(m.cfg.TempDir, fmt.Sprintf("%s.part%02d", job.ID, index))
+	return filepath.Join(job.TempDir(), fmt.Sprintf("%s.part%02d", job.ID, index))
 }
 
 func (m *Manager) cleanupParts(job *Job) {
@@ -643,4 +643,38 @@ func uniquePath(dir, name string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("cannot find a free filename for %q", name)
+}
+
+// resolveDownloadDir validates a per-job save path.
+//
+// An empty path means "use the configured default". Anything else must be
+// absolute and writable: a relative path would resolve against the daemon's
+// working directory, which is not something the user can reason about, and a
+// silent fallback to the default would scatter files somewhere unexpected.
+func resolveDownloadDir(defaultDir, custom string) (string, error) {
+	custom = strings.TrimSpace(custom)
+	if custom == "" {
+		return defaultDir, nil
+	}
+
+	dir := filepath.Clean(custom)
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("download path %q must be absolute (e.g. D:\\Media or /home/you/Media)", custom)
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("cannot use download path %q: %w", dir, err)
+	}
+
+	// MkdirAll succeeds on a directory we may still not be able to write to,
+	// so probe it before accepting the job.
+	probe, err := os.CreateTemp(dir, ".qd-write-test-*")
+	if err != nil {
+		return "", fmt.Errorf("download path %q is not writable: %w", dir, err)
+	}
+	name := probe.Name()
+	probe.Close()
+	_ = os.Remove(name)
+
+	return dir, nil
 }

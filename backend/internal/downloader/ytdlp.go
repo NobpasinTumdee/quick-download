@@ -54,7 +54,7 @@ func (m *Manager) runYtDlp(ctx context.Context, job *Job, kind Kind) error {
 
 	args := m.ytDlpArgs(job, tools)
 	cmd := exec.CommandContext(ctx, tools.YtDlp.Path, args...)
-	cmd.Dir = m.cfg.DownloadDir
+	cmd.Dir = job.Dir()
 
 	// yt-dlp spawns ffmpeg as a child; put the whole thing in its own process
 	// group so cancelling kills the tree instead of orphaning the muxer.
@@ -145,12 +145,13 @@ func (m *Manager) ytDlpArgs(job *Job, tools config.Tools) []string {
 		}
 	}
 
-	outTmpl := filepath.Join(m.cfg.DownloadDir, "%(title).150B [%(id)s].%(ext)s")
+	dir := job.Dir()
+	outTmpl := filepath.Join(dir, "%(title).150B [%(id)s].%(ext)s")
 	if req.Filename != "" {
 		// An explicit name still needs yt-dlp to pick the container extension.
 		stem := strings.TrimSuffix(sanitizeFilename(req.Filename), filepath.Ext(req.Filename))
 		if stem != "" {
-			outTmpl = filepath.Join(m.cfg.DownloadDir, stem+".%(ext)s")
+			outTmpl = filepath.Join(dir, stem+".%(ext)s")
 		}
 	}
 
@@ -180,10 +181,6 @@ func (m *Manager) ytDlpArgs(job *Job, tools config.Tools) []string {
 		// authentication". Unknown extractor keys are ignored by yt-dlp.
 		"--extractor-args", "youtubetab:skip=authcheck",
 
-		// Best video+audio, preferring an mp4 container that plays everywhere.
-		"-f", "bv*+ba/b",
-		"--merge-output-format", "mp4",
-
 		// Machine-readable progress. %(progress.X)s prints "NA" when unknown,
 		// which parseNum turns into a zero value.
 		"--progress-template",
@@ -193,6 +190,9 @@ func (m *Manager) ytDlpArgs(job *Job, tools config.Tools) []string {
 		"--progress-template",
 		"postprocess:" + postSentinel + "%(progress.status)s|%(progress.postprocessor)s",
 	}
+
+	// Resolution / audio-only selection.
+	args = append(args, qualityArgs(req.Quality)...)
 
 	// Carry the browser's identity so gated streams resolve the same way —
 	// except on YouTube, where doing exactly that is what trips the anti-bot
@@ -582,4 +582,51 @@ func cleanMediaURL(raw string) string {
 // forwarded to yt-dlp for this URL. See the block comment above.
 func sendBrowserIdentity(raw string) bool {
 	return !isYouTubeURL(raw)
+}
+
+// ---------------------------------------------------------------------------
+// Quality selection
+// ---------------------------------------------------------------------------
+
+// Quality values accepted from the extension.
+const (
+	QualityBest  = "best"
+	Quality1080p = "1080p"
+	Quality720p  = "720p"
+	QualityAudio = "audio"
+)
+
+// qualityArgs maps a UI choice onto yt-dlp format selectors.
+//
+// The trailing "/b" in each selector is the fallback: if no separate video and
+// audio streams match, take the best pre-muxed single file instead. Without it
+// a site that only offers combined streams fails outright.
+//
+// Audio-only deliberately omits --merge-output-format: there is no video track
+// to merge, and the container is decided by --audio-format.
+func qualityArgs(quality string) []string {
+	switch strings.ToLower(strings.TrimSpace(quality)) {
+	case QualityAudio, "audio-only", "audioonly", "mp3":
+		return []string{
+			"-f", "ba/b",
+			"--extract-audio",
+			"--audio-format", "mp3",
+			"--audio-quality", "0", // best VBR
+		}
+	case Quality1080p, "1080":
+		return []string{
+			"-f", "bv*[height<=1080]+ba/b",
+			"--merge-output-format", "mp4",
+		}
+	case Quality720p, "720":
+		return []string{
+			"-f", "bv*[height<=720]+ba/b",
+			"--merge-output-format", "mp4",
+		}
+	default: // "", "best", or anything unrecognised
+		return []string{
+			"-f", "bv*+ba/b",
+			"--merge-output-format", "mp4",
+		}
+	}
 }
