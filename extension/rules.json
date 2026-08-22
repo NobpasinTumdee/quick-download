@@ -1,0 +1,29 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": { "type": "allow" },
+    "condition": {
+      "resourceTypes": ["media"],
+      "urlFilter": "*"
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": { "type": "allow" },
+    "condition": {
+      "resourceTypes": ["xmlhttprequest", "other", "media"],
+      "regexFilter": "\\.(mp4|webm|m4v|mov|mkv|avi|flv|m4a|mp3|aac|ogg|wav|flac)(\\?|$)"
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": { "type": "allow" },
+    "condition": {
+      "resourceTypes": ["image", "xmlhttprequest", "other"],
+      "regexFilter": "\\.(jpe?g|png|gif|webp|avif|bmp|svg)(\\?|$)"
+    }
+  }
+]

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="popup.css" />
+  <title>Quick Download</title>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">⬇</span>
+      <div>
+        <strong>Quick Download</strong>
+        <span id="engine" class="engine offline">engine offline</span>
+      </div>
+    </div>
+    <button id="dashboard" class="btn ghost" title="Open the dashboard">Dashboard</button>
+  </header>
+
+  <div id="tools-warning" class="warning" hidden>
+    <strong>yt-dlp / ffmpeg missing.</strong>
+    Streams (HLS, DASH, site pages) cannot be downloaded until both sit next to
+    <code>quick-download.exe</code>. Direct files still work.
+  </div>
+
+  <form id="manual">
+    <input id="manual-url" type="url" placeholder="Paste any URL — file, m3u8 or page…" required />
+    <button class="btn primary" type="submit">Get</button>
+  </form>
+
+  <div class="tabs">
+    <button class="tab active" data-scope="tab">This tab</button>
+    <button class="tab" data-scope="all">Everything</button>
+    <button id="refresh" class="btn ghost tiny" title="Re-scan the page for thumbnails">Rescan</button>
+    <button id="clear" class="btn ghost tiny">Clear</button>
+  </div>
+
+  <ul id="list"></ul>
+
+  <p id="empty" class="empty">
+    Nothing detected yet.<br />
+    Play a video or open an image, then reopen this popup.
+  </p>
+
+  <details class="settings">
+    <summary>Settings</summary>
+    <label class="row">
+      <input type="checkbox" id="set-streams" />
+      <span>Sniff HLS / DASH streams</span>
+    </label>
+    <label class="row">
+      <input type="checkbox" id="set-thumbs" />
+      <span>Generate thumbnails</span>
+    </label>
+    <label class="row">
+      <input type="checkbox" id="set-intercept" />
+      <span>Take over Chrome's own downloads</span>
+    </label>
+    <label class="row">
+      <input type="checkbox" id="set-images" />
+      <span>Detect images</span>
+    </label>
+    <label class="row">
+      <span>Ignore images under</span>
+      <select id="set-minimage">
+        <option value="0">any size</option>
+        <option value="51200">50 KB</option>
+        <option value="102400">100 KB</option>
+        <option value="512000">500 KB</option>
+      </select>
+    </label>
+  </details>
+
+  <template id="item-tpl">
+    <li>
+      <div class="thumb">
+        <img data-thumb alt="" loading="lazy" />
+        <span class="fallback" data-fallback></span>
+        <span class="badge" data-badge hidden></span>
+        <span class="duration" data-duration hidden></span>
+      </div>
+      <div class="info">
+        <p class="name" data-name></p>
+        <p class="sub" data-sub></p>
+      </div>
+      <button class="btn primary tiny" data-download>Download</button>
+    </li>
+  </template>
+
+  <script src="dist/popup.js" type="module"></script>
+</body>
+</html>

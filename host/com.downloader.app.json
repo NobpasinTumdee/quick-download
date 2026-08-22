@@ -1,0 +1,9 @@
+{
+  "name": "com.downloader.app",
+  "description": "Quick Download local engine",
+  "path": "REPLACE_WITH_ABSOLUTE_PATH_TO_quick-download.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_YOUR_EXTENSION_ID/"
+  ]
+}

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b1020" />
+  <title>Quick Download</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%231d4ed8'/%3E%3Cpath d='M50 18v38m0 0 17-17M50 56 33 39M25 74h50' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Quick Download home">
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3v12" />
+            <path d="m7 12 5 5 5-5" />
+            <path d="M4 21h16" />
+          </svg>
+        </span>
+        <span class="brand-copy">
+          <strong>Quick Download</strong>
+          <span>Local multi-connection engine</span>
+        </span>
+      </a>
+
+      <div class="status" role="status" aria-live="polite">
+        <span id="conn-dot" class="dot offline"></span>
+        <span id="conn-label">connecting…</span>
+      </div>
+    </header>
+
+    <main>
+      <div id="tools-banner" class="banner" hidden>
+        <span class="banner-icon" aria-hidden="true">!</span>
+        <div class="banner-copy">
+          <p class="banner-title">yt-dlp / ffmpeg not found</p>
+          <p class="banner-sub">
+            Streaming downloads (HLS, DASH, site pages) need both binaries next to the engine.
+            Direct file downloads are unaffected.
+            <span id="tools-path"></span>
+          </p>
+        </div>
+      </div>
+
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Download anything</p>
+          <h1>Start a download</h1>
+          <p class="hero-copy">Paste a media URL and let the local engine handle the rest.</p>
+        </div>
+
+        <form id="add-form" class="add-form" autocomplete="off">
+          <label class="sr-only" for="url-input">Media URL</label>
+          <div class="url-field">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M10 13a5 5 0 0 0 7.07.07l2-2a5 5 0 0 0-7.07-7.07l-1.15 1.15" />
+              <path d="M14 11a5 5 0 0 0-7.07-.07l-2 2A5 5 0 0 0 7 20l1.15-1.15" />
+            </svg>
+            <input id="url-input" type="url" placeholder="Paste a media URL…" required />
+          </div>
+          <button type="submit" class="btn primary">Download</button>
+        </form>
+      </section>
+
+      <section class="stats" aria-label="Download statistics">
+        <div class="stat">
+          <span class="stat-value" id="stat-active">0</span>
+          <span class="stat-label">Active</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="stat-done">0</span>
+          <span class="stat-label">Completed</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="stat-speed">0 B/s</span>
+          <span class="stat-label">Total speed</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="stat-conns">0</span>
+          <span class="stat-label">Connections</span>
+        </div>
+      </section>
+
+      <section class="list-head">
+        <div class="section-heading">
+          <h2>Downloads</h2>
+          <span id="download-count" class="section-count">0</span>
+        </div>
+        <button id="clear-btn" class="btn ghost">Clear finished</button>
+      </section>
+
+      <section id="list" class="list" aria-live="polite"></section>
+
+      <div id="empty" class="empty">
+        <div class="empty-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3v11" />
+            <path d="m8 11 4 4 4-4" />
+            <path d="M5 20h14" />
+          </svg>
+        </div>
+        <p class="empty-title">Nothing downloading yet</p>
+        <p class="empty-sub">Paste a URL above, or open a page with media and the extension will surface it here.</p>
+      </div>
+    </main>
+
+    <footer id="footer">
+      <span>Saving to</span>
+      <code id="dl-dir">…</code>
+    </footer>
+  </div>
+
+  <template id="row-tpl">
+    <article class="card" data-id="">
+      <div class="card-head">
+        <div class="file">
+          <span class="kind" data-kind></span>
+          <div class="names">
+            <p class="filename" data-filename></p>
+            <p class="url" data-url></p>
+          </div>
+          <span class="engine-tag" data-engine hidden></span>
+        </div>
+        <div class="actions">
+          <button class="btn tiny reveal" data-action="reveal" title="Show in folder">Folder</button>
+          <button class="btn tiny retry" data-action="retry" title="Retry">Retry</button>
+          <button class="btn tiny danger cancel" data-action="cancel" title="Cancel">Cancel</button>
+        </div>
+      </div>
+
+      <div class="progress-row">
+        <div class="bar" aria-hidden="true"><div class="fill" data-fill></div></div>
+        <span class="progress-label" data-progress></span>
+      </div>
+      <div class="chunks" data-chunks></div>
+
+      <div class="meta">
+        <span data-state class="pill"></span>
+        <span data-phase class="phase"></span>
+        <span data-size></span>
+        <span data-speed></span>
+        <span data-eta></span>
+      </div>
+      <p class="error" data-error hidden></p>
+    </article>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Quick Download</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬇️</text></svg>" />
+</head>
+<body>
+  <div class="aurora" aria-hidden="true">
+    <span class="blob blob-a"></span>
+    <span class="blob blob-b"></span>
+    <span class="blob blob-c"></span>
+  </div>
+
+  <header class="topbar glass">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v12" /><path d="m7 12 5 5 5-5" /><path d="M4 21h16" />
+        </svg>
+      </div>
+      <div>
+        <h1>Quick Download</h1>
+        <p class="tagline">Local multi-connection engine</p>
+      </div>
+    </div>
+
+    <div class="status">
+      <span id="conn-dot" class="dot offline"></span>
+      <span id="conn-label">connecting…</span>
+    </div>
+  </header>
+
+  <main>
+    <div id="tools-banner" class="glass banner" hidden>
+      <span class="banner-icon" aria-hidden="true">⚠</span>
+      <div>
+        <p class="banner-title">yt-dlp / ffmpeg not found</p>
+        <p class="banner-sub">
+          Streaming downloads (HLS, DASH, site pages) need both binaries next to
+          the engine. Direct file downloads are unaffected.
+          <span id="tools-path"></span>
+        </p>
+      </div>
+    </div>
+
+    <section class="glass panel add-panel">
+      <form id="add-form" autocomplete="off">
+        <input id="url-input" type="url" placeholder="Paste a media URL and press Enter…" required />
+        <button type="submit" class="btn primary">Download</button>
+      </form>
+    </section>
+
+    <section class="stats">
+      <div class="glass stat"><span class="stat-value" id="stat-active">0</span><span class="stat-label">active</span></div>
+      <div class="glass stat"><span class="stat-value" id="stat-done">0</span><span class="stat-label">completed</span></div>
+      <div class="glass stat"><span class="stat-value" id="stat-speed">0 B/s</span><span class="stat-label">total speed</span></div>
+      <div class="glass stat"><span class="stat-value" id="stat-conns">0</span><span class="stat-label">connections</span></div>
+    </section>
+
+    <section class="list-head">
+      <h2>Downloads</h2>
+      <button id="clear-btn" class="btn ghost">Clear finished</button>
+    </section>
+
+    <section id="list" class="list"></section>
+
+    <div id="empty" class="glass empty">
+      <p class="empty-title">Nothing downloading yet</p>
+      <p class="empty-sub">Browse a page with video or images — the extension will offer them here — or paste a URL above.</p>
+    </div>
+  </main>
+
+  <footer id="footer">saving to <code id="dl-dir">…</code></footer>
+
+  <template id="row-tpl">
+    <article class="glass card" data-id="">
+      <div class="card-head">
+        <div class="file">
+          <span class="kind" data-kind></span>
+          <div class="names">
+            <p class="filename" data-filename></p>
+            <p class="url" data-url></p>
+          </div>
+          <span class="engine-tag" data-engine hidden></span>
+        </div>
+        <div class="actions">
+          <button class="btn tiny reveal" data-action="reveal" title="Show in folder">Folder</button>
+          <button class="btn tiny retry" data-action="retry" title="Retry">Retry</button>
+          <button class="btn tiny danger cancel" data-action="cancel" title="Cancel">Cancel</button>
+        </div>
+      </div>
+
+      <div class="bar"><div class="fill" data-fill></div></div>
+      <div class="chunks" data-chunks></div>
+
+      <div class="meta">
+        <span data-state class="pill"></span>
+        <span data-phase class="phase"></span>
+        <span data-progress></span>
+        <span data-size></span>
+        <span data-speed></span>
+        <span data-eta></span>
+      </div>
+      <p class="error" data-error hidden></p>
+    </article>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>

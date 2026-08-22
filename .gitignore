@@ -1,0 +1,23 @@
+# build output (also holds the third-party yt-dlp.exe / ffmpeg.exe)
+bin/
+tools/yt-dlp*
+tools/ffmpeg*
+extension/dist/
+extension/node_modules/
+
+# generated host manifest (contains machine-specific paths and your extension id)
+host/com.downloader.app.local.json
+
+# logs and partial downloads
+*.log
+*.part*
+.qd-parts/
+
+# Chrome writes this when it loads the unpacked extension
+extension/_metadata/
+
+# editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
