@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="utf-8" />
-  <meta name="color-scheme" content="dark" />
+  <meta name="color-scheme" content="dark light" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="popup.css" />
   <title>Quick Download</title>
@@ -18,10 +18,23 @@
         <span id="engine" class="engine offline">engine offline</span>
       </div>
     </div>
-    <button id="dashboard" class="btn ghost" title="Open the dashboard" aria-label="Open dashboard">
-      Dashboard <span class="button-arrow" aria-hidden="true">↗</span>
-    </button>
+    <div class="header-actions">
+      <label class="switch" title="Enable or disable media sniffing">
+        <input type="checkbox" id="master-toggle" checked aria-label="Enable media sniffing" />
+        <span class="switch-track" aria-hidden="true"></span>
+      </label>
+      <button id="theme-btn" class="btn ghost tiny icon-btn" title="Switch theme" aria-label="Switch theme">🌙</button>
+      <button id="panel-btn" class="btn ghost tiny icon-btn" title="Open in the side panel" aria-label="Open in side panel">⇥</button>
+      <button id="dashboard" class="btn ghost tiny" title="Open the dashboard" aria-label="Open dashboard">
+        Dashboard <span class="button-arrow" aria-hidden="true">↗</span>
+      </button>
+    </div>
   </header>
+
+  <div id="paused" class="paused" hidden>
+    <span aria-hidden="true">⏸</span>
+    <span>Sniffing is off. Existing downloads keep running.</span>
+  </div>
 
   <div id="tools-warning" class="warning" hidden>
     <span class="warning-icon" aria-hidden="true">!</span>
@@ -104,6 +117,17 @@
       <div class="info">
         <p class="name" data-name></p>
         <p class="sub" data-sub></p>
+        <div class="progress" data-progress hidden>
+          <div class="progress-track">
+            <i class="progress-fill" data-fill></i>
+          </div>
+          <div class="progress-meta">
+            <span class="pstate" data-pstate></span>
+            <span data-ppercent></span>
+            <span data-pspeed></span>
+            <span data-peta></span>
+          </div>
+        </div>
       </div>
       <button class="btn primary tiny" data-download>Download</button>
     </li>

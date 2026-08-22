@@ -30,11 +30,16 @@
     "cookies",
     "contextMenus",
     "downloads",
-    "scripting"
+    "scripting",
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
+  "side_panel": {
+    "default_path": "popup.html?panel=1"
+  },
+
   "background": {
     "service_worker": "dist/background.js",
     "type": "module"

@@ -18,6 +18,11 @@
  * global` (which would itself require module scope).
  */
 
+interface PageMetaLocal {
+  ogImage?: string;
+  youtubeId?: string;
+}
+
 interface ScannedMediaLocal {
   tag: 'video' | 'audio' | 'image';
   src: string;
@@ -109,21 +114,89 @@ interface ScannedMediaLocal {
     return absolute(source?.getAttribute('src'));
   }
 
-  function scanVideos(out: ScannedMediaLocal[]): void {
+  /**
+   * Page-level artwork. This is what rescues streams: an HLS or YouTube video
+   * plays from a blob: URL whose frames are usually cross-origin (so the canvas
+   * taints), but essentially every video page advertises a still through
+   * OpenGraph, and YouTube publishes one at a predictable address.
+   */
+  function pageMeta(): PageMetaLocal {
+    const meta = (selector: string): string => {
+      const el = document.querySelector(selector);
+      const value = el?.getAttribute('content') || el?.getAttribute('href') || '';
+      return value ? absolute(value) : '';
+    };
+
+    const ogImage =
+      meta('meta[property="og:image"]') ||
+      meta('meta[name="og:image"]') ||
+      meta('meta[name="twitter:image"]') ||
+      meta('meta[property="twitter:image"]') ||
+      meta('link[rel="image_src"]') ||
+      undefined;
+
+    return { ogImage, youtubeId: youTubeVideoId(location.href) };
+  }
+
+  /** Extracts the video id from any YouTube URL shape. */
+  function youTubeVideoId(raw: string): string | undefined {
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      return undefined;
+    }
+    const host = u.hostname.toLowerCase().replace(/^www\./, '');
+    const isYouTube =
+      host === 'youtube.com' ||
+      host.endsWith('.youtube.com') ||
+      host === 'youtu.be' ||
+      host === 'youtube-nocookie.com';
+    if (!isYouTube) return undefined;
+
+    if (host === 'youtu.be') {
+      const id = u.pathname.replace(/^\//, '').split('/')[0];
+      return /^[\w-]{6,}$/.test(id) ? id : undefined;
+    }
+    const v = u.searchParams.get('v');
+    if (v && /^[\w-]{6,}$/.test(v)) return v;
+
+    const m = u.pathname.match(/^\/(?:shorts|live|embed|v)\/([\w-]{6,})/);
+    return m ? m[1] : undefined;
+  }
+
+  /** YouTube's predictable still for a video id. */
+  function youTubeThumbnail(id: string): string {
+    return 'https://img.youtube.com/vi/' + id + '/hqdefault.jpg';
+  }
+
+  function scanVideos(out: ScannedMediaLocal[], meta: PageMetaLocal): void {
     document.querySelectorAll('video').forEach((video) => {
       if (out.length >= MAX_ITEMS) return;
       const src = sourceOf(video);
       const poster = absolute(video.getAttribute('poster'));
 
-      // A video with neither a source nor a poster is a placeholder element.
-      if (!src && !poster) return;
+      // A video with neither a source nor a poster is a placeholder element -
+      // unless the page advertises artwork, which is the normal case for a
+      // stream player whose <video> is fed from a blob: URL.
+      if (!src && !poster && !meta.ogImage && !meta.youtubeId) return;
+
+      // Preference order, best first:
+      //   1. a live canvas frame   - shows what is actually on screen
+      //   2. the poster attribute  - the site's own still for this video
+      //   3. the YouTube thumbnail - predictable and always correct
+      //   4. og:image              - the page's advertised artwork
+      const thumbnail =
+        captureFrame(video) ??
+        (poster || undefined) ??
+        (meta.youtubeId ? youTubeThumbnail(meta.youtubeId) : undefined) ??
+        meta.ogImage;
 
       out.push({
         tag: 'video',
         src,
         poster: poster || undefined,
-        // A live frame beats the poster: it shows what is actually playing.
-        thumbnail: captureFrame(video) ?? (poster || undefined),
+        thumbnail,
         title: titleFor(video),
         duration: Number.isFinite(video.duration) ? video.duration : undefined,
         width: video.videoWidth || undefined,
@@ -174,10 +247,12 @@ interface ScannedMediaLocal {
     pageTitle: string;
     pageUrl: string;
     media: ScannedMediaLocal[];
+    pageThumbnail?: string;
   } {
     const media: ScannedMediaLocal[] = [];
+    const meta = pageMeta();
     try {
-      scanVideos(media);
+      scanVideos(media, meta);
       scanAudio(media);
       scanImages(media);
     } catch (err) {
@@ -189,14 +264,28 @@ interface ScannedMediaLocal {
       pageTitle: document.title,
       pageUrl: location.href,
       media,
+      // Handed back so the service worker can give a sniffed stream a preview
+      // even when the page has no <video> whose frame it could read.
+      pageThumbnail: meta.youtubeId ? youTubeThumbnail(meta.youtubeId) : meta.ogImage,
     };
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.kind === 'qd-scan') {
-      sendResponse(scan());
+      // Master switch. The service worker already refuses to inject while
+      // sniffing is off; this is the second line of defence for an instance
+      // that was injected before the user flipped the switch.
+      chrome.storage.local.get('settings', (bag) => {
+        const settings = (bag as { settings?: { enabled?: boolean } })?.settings;
+        if (settings?.enabled === false) {
+          sendResponse({ ok: false, pageTitle: document.title, pageUrl: location.href, media: [] });
+          return;
+        }
+        sendResponse(scan());
+      });
+      // Asynchronous reply: keep the message channel open.
+      return true;
     }
-    // Synchronous reply: returning false/undefined closes the channel cleanly.
     return false;
   });
 })();

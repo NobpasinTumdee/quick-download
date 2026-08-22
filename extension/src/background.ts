@@ -28,6 +28,8 @@
 import {
   classify,
   cleanPageUrl,
+  youTubeThumbnail,
+  youTubeVideoId,
   isSiteHost,
   isWatchPageUrl,
   isYouTubeHost,
@@ -42,6 +44,7 @@ import {
   type HostResponse,
   type MediaItem,
   type MediaKind,
+  type EngineInfo,
   type ScanResult,
   type Settings,
   type StreamType,
@@ -100,6 +103,53 @@ async function saveSettings(patch: Partial<Settings>): Promise<Settings> {
   const next = { ...(await getSettings()), ...patch };
   await chrome.storage.local.set({ [SETTINGS_KEY]: next });
   return next;
+}
+
+/** Master switch. Every sniffing entry point checks this first. */
+async function isEnabled(): Promise<boolean> {
+  return (await getSettings()).enabled !== false;
+}
+
+/**
+ * Greys out the toolbar icon while sniffing is off.
+ *
+ * The icon is desaturated at runtime from the real PNG rather than shipping a
+ * second set of assets: fetch it, draw it into an OffscreenCanvas with a
+ * grayscale filter, and hand chrome.action the resulting ImageData. Service
+ * workers have no DOM, but OffscreenCanvas works there.
+ */
+async function paintActionIcon(enabled: boolean): Promise<void> {
+  try {
+    if (enabled) {
+      // Restoring means clearing the override so the manifest icons apply.
+      await chrome.action.setIcon({ path: {
+        16: 'icons/icon16.png',
+        32: 'icons/icon32.png',
+        48: 'icons/icon48.png',
+        128: 'icons/icon128.png',
+      } });
+      await chrome.action.setTitle({ title: 'Quick Download' });
+      return;
+    }
+
+    const imageData: Record<number, ImageData> = {};
+    for (const size of [16, 32, 48]) {
+      const response = await fetch(chrome.runtime.getURL(`icons/icon${size}.png`));
+      const bitmap = await createImageBitmap(await response.blob());
+      const canvas = new OffscreenCanvas(size, size);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) continue;
+      ctx.filter = 'grayscale(1) opacity(0.45)';
+      ctx.drawImage(bitmap, 0, 0, size, size);
+      imageData[size] = ctx.getImageData(0, 0, size, size);
+      bitmap.close();
+    }
+    await chrome.action.setIcon({ imageData });
+    await chrome.action.setTitle({ title: 'Quick Download - sniffing is off' });
+  } catch (err) {
+    // A failed repaint must never break the toggle itself.
+    console.debug('[quick-download] could not repaint the action icon', err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +314,8 @@ async function inspect(details: chrome.webRequest.WebResponseHeadersDetails): Pr
   try {
     if (details.statusCode >= 400) return;
     if (details.url.includes('127.0.0.1:') || details.url.includes('localhost:')) return;
+    // Master switch: do no work at all while sniffing is off.
+    if (!(await isEnabled())) return;
 
     const headers = details.responseHeaders ?? [];
     const header = (name: string): string =>
@@ -364,6 +416,7 @@ chrome.tabs.onActivated.addListener(() => void refreshBadge());
  * a scanner on every page all the time would be pure overhead.
  */
 async function scanTab(tabId: number): Promise<ScanResult | null> {
+  if (!(await isEnabled())) return null;
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -402,6 +455,8 @@ async function attachThumbnails(tabId: number): Promise<void> {
   const items = await getItems();
   const videoThumb = scan.media.find((m) => m.tag === 'video' && m.thumbnail)?.thumbnail;
   const videoMeta = scan.media.find((m) => m.tag === 'video');
+  // og:image / the YouTube still, used when no <video> frame was readable.
+  const pageThumb = scan.pageThumbnail;
 
   let changed = false;
   for (const item of items) {
@@ -418,14 +473,19 @@ async function attachThumbnails(tabId: number): Promise<void> {
       continue;
     }
 
-    // Streams have no matchable URL — fall back to the page's video frame.
-    if (item.kind === 'stream' && videoThumb) {
-      item.thumbnail = videoThumb;
-      item.duration ??= videoMeta?.duration;
-      item.width ??= videoMeta?.width;
-      item.height ??= videoMeta?.height;
-      changed = true;
-      continue;
+    // Streams have no matchable URL: use the page's video frame, and if the
+    // canvas was tainted (the usual case for HLS and YouTube), the page's own
+    // artwork. This is what stops streams from showing a bare icon.
+    if (item.kind === 'stream') {
+      const thumb = videoThumb ?? pageThumb;
+      if (thumb) {
+        item.thumbnail = thumb;
+        item.duration ??= videoMeta?.duration;
+        item.width ??= videoMeta?.width;
+        item.height ??= videoMeta?.height;
+        changed = true;
+        continue;
+      }
     }
 
     // An image is its own thumbnail; no DOM round trip needed.
@@ -460,7 +520,9 @@ async function pageItemFor(tabId: number): Promise<MediaItem | null> {
       pageUrl: url,
       pageTitle: tab.title ?? '',
       seenAt: Date.now(),
-      thumbnail: tab.favIconUrl,
+      // A YouTube still is derivable from the URL alone, so the page entry has
+      // a real preview even before the scanner runs (or if injection fails).
+      thumbnail: youTubeThumbnail(youTubeVideoId(url)) ?? tab.favIconUrl,
       label: isYouTubeHost(url) ? 'YouTube video' : 'this page',
     };
   } catch {
@@ -477,6 +539,7 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     const settings = await getSettings();
     const isOurs = item.url.includes('127.0.0.1:') || item.url.includes('localhost:');
     const eligible =
+      settings.enabled !== false &&
       settings.interceptChromeDownloads &&
       !isOurs &&
       /^https?:/.test(item.url) &&
@@ -512,7 +575,31 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
 // Context menu
 // ---------------------------------------------------------------------------
 
+/**
+ * The popup document doubles as the side panel document; ?panel=1 lets it widen
+ * its layout and hide the "open in side panel" button.
+ */
+async function configureSidePanel(): Promise<void> {
+  try {
+    await chrome.sidePanel.setOptions({ path: 'popup.html?panel=1', enabled: true });
+  } catch (err) {
+    console.debug('[quick-download] side panel unavailable', err);
+  }
+}
+
+chrome.runtime.onStartup.addListener(() => {
+  void (async () => {
+    await paintActionIcon(await isEnabled());
+    await configureSidePanel();
+  })();
+});
+
 chrome.runtime.onInstalled.addListener(() => {
+  void (async () => {
+    await paintActionIcon(await isEnabled());
+    await configureSidePanel();
+  })();
+
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: 'qd-download',
@@ -639,13 +726,34 @@ chrome.runtime.onMessage.addListener((message: UiMessage, _sender, sendResponse)
         sendResponse(await sendToHost({ type: 'open_dashboard' }));
         break;
 
+      case 'engineInfo': {
+        // ping also starts the daemon if it is not running, and its reply
+        // carries the dashboard origin the popup turns into a ws:// URL.
+        const pong = await sendToHost({ type: 'ping' });
+        const info: EngineInfo = {
+          ok: pong.ok,
+          version: pong.version,
+          toolsReady: pong.toolsReady,
+          dashboard: pong.dashboard,
+          error: pong.error,
+        };
+        sendResponse(info);
+        break;
+      }
+
       case 'getSettings':
         sendResponse(await getSettings());
         break;
 
-      case 'setSettings':
-        sendResponse(await saveSettings(message.settings));
+      case 'setSettings': {
+        const next = await saveSettings(message.settings);
+        if (message.settings.enabled !== undefined) {
+          await paintActionIcon(next.enabled);
+          if (!next.enabled) await chrome.action.setBadgeText({ text: '' });
+        }
+        sendResponse(next);
         break;
+      }
 
       default:
         sendResponse({ ok: false, error: 'unknown message' });

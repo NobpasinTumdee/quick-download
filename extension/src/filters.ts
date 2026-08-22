@@ -281,3 +281,34 @@ export function sniffDecision(
   }
   return { keep: true, streamType, kind };
 }
+
+
+/**
+ * Extracts the video id from any YouTube URL shape: /watch?v=, youtu.be/,
+ * /shorts/, /live/, /embed/.
+ */
+export function youTubeVideoId(raw: string): string | undefined {
+  if (!isYouTubeHost(raw)) return undefined;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if (hostOf(raw) === 'youtu.be') {
+    const id = u.pathname.replace(/^\//, '').split('/')[0];
+    return /^[\w-]{6,}$/.test(id) ? id : undefined;
+  }
+  const v = u.searchParams.get('v');
+  if (v && /^[\w-]{6,}$/.test(v)) return v;
+  const m = u.pathname.match(/^\/(?:shorts|live|embed|v)\/([\w-]{6,})/);
+  return m ? m[1] : undefined;
+}
+
+/**
+ * YouTube's predictable still for a video id. hqdefault exists for every video,
+ * unlike maxresdefault which 404s on anything not uploaded in HD.
+ */
+export function youTubeThumbnail(id: string | undefined): string | undefined {
+  return id ? `https://img.youtube.com/vi/${id}/hqdefault.jpg` : undefined;
+}

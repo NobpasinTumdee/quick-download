@@ -81,6 +81,42 @@ export interface ScanResult {
   pageTitle: string;
   pageUrl: string;
   media: ScannedMedia[];
+  /**
+   * Page-level artwork (og:image, or the YouTube thumbnail). This is what gives
+   * a sniffed stream a preview: its <video> plays from a blob: URL whose frames
+   * are usually cross-origin, so the canvas capture cannot be used.
+   */
+  pageThumbnail?: string;
+  error?: string;
+}
+
+/**
+ * One download as the Go engine reports it. Mirrors the JobSnapshot the daemon
+ * broadcasts over the WebSocket - only the fields the popup renders.
+ */
+export interface JobProgress {
+  id: string;
+  url: string;
+  filename: string;
+  state: 'queued' | 'probing' | 'downloading' | 'merging' | 'completed' | 'failed' | 'canceled';
+  progress: number;
+  speed: number;
+  eta: number;
+  size: number;
+  downloaded: number;
+  engine: string;
+  kind: string;
+  phase?: string;
+  error?: string;
+}
+
+/** What the popup needs in order to reach the engine's WebSocket. */
+export interface EngineInfo {
+  ok: boolean;
+  version?: string;
+  toolsReady?: boolean;
+  /** e.g. "http://127.0.0.1:9090" - the popup derives the ws:// URL from this. */
+  dashboard?: string;
   error?: string;
 }
 
@@ -93,10 +129,18 @@ export type UiMessage =
   | { kind: 'clear'; tabId?: number }
   | { kind: 'ping' }
   | { kind: 'openDashboard' }
+  | { kind: 'engineInfo' }
   | { kind: 'getSettings' }
   | { kind: 'setSettings'; settings: Partial<Settings> };
 
+/** 'system' follows prefers-color-scheme; the toggle writes an explicit value. */
+export type ThemePreference = 'system' | 'dark' | 'light';
+
 export interface Settings {
+  /** Master switch. When false the service worker sniffs nothing at all. */
+  enabled: boolean;
+  /** UI theme for the popup and the side panel. */
+  theme: ThemePreference;
   /** Take over downloads Chrome itself starts (IDM-style interception). */
   interceptChromeDownloads: boolean;
   /** Ignore images below this size, in bytes: kills icon/spinner noise. */
@@ -110,6 +154,8 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  enabled: true,
+  theme: 'system',
   interceptChromeDownloads: false,
   minImageBytes: 100 * 1024,
   captureImages: true,

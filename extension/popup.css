@@ -14,6 +14,137 @@
   --bad: #ff6f7d;
   --warn: #f3c969;
   --radius: 11px;
+  --surface-3: #14171c;
+  --surface-4: #15181d;
+  --surface-hover-2: #1a1e24;
+  --thumb-bg: #1d2127;
+  --text-strong: #f0f2f5;
+  --text-2: #cbd0d8;
+  --text-3: #b8bec8;
+  --placeholder: #69717d;
+  --on-accent: #0f1620;
+  --logo-bg: #182131;
+  --logo-fg: #dbe8ff;
+  --logo-ring: rgba(138, 180, 255, 0.22);
+  --field-focus-bg: #191d24;
+  --checkbox-border: #3b424d;
+  --focus-ring: rgba(138, 180, 255, 0.65);
+  --warn-bg: #1b1913;
+  --warn-border: #3b3320;
+  --warn-text: #e6d49b;
+  --warn-strong: #f2df9d;
+  --warn-muted: #aa9d77;
+  --warn-code: #d8c58d;
+  --warn-icon-fg: #16140f;
+  --badge-bg: rgba(224, 236, 255, 0.92);
+  --badge-fg: #0d1420;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.22);
+  --track: #23272f;
+  color-scheme: dark;
+}
+
+
+/* ---------------------------------------------------------------------------
+   Themes
+   ---------------------------------------------------------------------------
+   Dark is the default above. Light is declared twice on purpose:
+
+     1. under prefers-color-scheme, for users who never touch the toggle, and
+     2. under [data-theme="light"], for an explicit choice.
+
+   Doing it in CSS rather than JS means the correct palette is painted on the
+   very first frame. MV3 forbids inline scripts on extension pages, so a JS-only
+   theme would always flash the wrong colours before popup.js runs.
+   The :not() guard stops the media query from overriding an explicit dark pick.
+*/
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --surface-hover: #eceff3;
+  --surface-3: #eef0f4;
+  --surface-4: #ffffff;
+  --surface-hover-2: #f7f8fa;
+  --stroke: #dfe3e9;
+  --stroke-strong: #c9cfd8;
+  --text: #1a1d23;
+  --text-strong: #0f1319;
+  --text-2: #3a4049;
+  --text-3: #4a515b;
+  --muted: #5c6470;
+  --muted-2: #7b838f;
+  --placeholder: #9aa1ac;
+  --accent: #2f6fed;
+  --accent-strong: #1f5ad6;
+  --on-accent: #ffffff;
+  --ok: #14874a;
+  --bad: #d03445;
+  --warn: #c2900c;
+  --thumb-bg: #eef0f4;
+  --logo-bg: #e8effd;
+  --logo-fg: #1f4fa8;
+  --logo-ring: rgba(47, 111, 237, 0.25);
+  --field-focus-bg: #ffffff;
+  --checkbox-border: #c2c9d3;
+  --focus-ring: rgba(47, 111, 237, 0.5);
+  --warn-bg: #fdf6e3;
+  --warn-border: #ecdba8;
+  --warn-text: #7a5c12;
+  --warn-strong: #5f4708;
+  --warn-muted: #8a7333;
+  --warn-code: #6b5210;
+  --warn-icon-fg: #ffffff;
+  --badge-bg: rgba(20, 26, 36, 0.85);
+  --badge-fg: #ffffff;
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.08);
+  --track: #e3e7ec;
+  color-scheme: light;
+  }
+}
+
+:root[data-theme="light"] {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --surface-hover: #eceff3;
+  --surface-3: #eef0f4;
+  --surface-4: #ffffff;
+  --surface-hover-2: #f7f8fa;
+  --stroke: #dfe3e9;
+  --stroke-strong: #c9cfd8;
+  --text: #1a1d23;
+  --text-strong: #0f1319;
+  --text-2: #3a4049;
+  --text-3: #4a515b;
+  --muted: #5c6470;
+  --muted-2: #7b838f;
+  --placeholder: #9aa1ac;
+  --accent: #2f6fed;
+  --accent-strong: #1f5ad6;
+  --on-accent: #ffffff;
+  --ok: #14874a;
+  --bad: #d03445;
+  --warn: #c2900c;
+  --thumb-bg: #eef0f4;
+  --logo-bg: #e8effd;
+  --logo-fg: #1f4fa8;
+  --logo-ring: rgba(47, 111, 237, 0.25);
+  --field-focus-bg: #ffffff;
+  --checkbox-border: #c2c9d3;
+  --focus-ring: rgba(47, 111, 237, 0.5);
+  --warn-bg: #fdf6e3;
+  --warn-border: #ecdba8;
+  --warn-text: #7a5c12;
+  --warn-strong: #5f4708;
+  --warn-muted: #8a7333;
+  --warn-code: #6b5210;
+  --warn-icon-fg: #ffffff;
+  --badge-bg: rgba(20, 26, 36, 0.85);
+  --badge-fg: #ffffff;
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.08);
+  --track: #e3e7ec;
+  color-scheme: light;
 }
 
 * {
@@ -46,7 +177,7 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 summary:focus-visible {
-  outline: 2px solid rgba(138, 180, 255, 0.65);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -82,10 +213,10 @@ header {
   display: grid;
   place-items: center;
   flex: none;
-  border: 1px solid rgba(138, 180, 255, 0.22);
+  border: 1px solid var(--logo-ring);
   border-radius: 10px;
-  color: #dbe8ff;
-  background: #182131;
+  color: var(--logo-fg);
+  background: var(--logo-bg);
   font-size: 19px;
   font-weight: 500;
   line-height: 1;
@@ -124,9 +255,9 @@ header {
   align-items: flex-start;
   margin-bottom: 12px;
   padding: 10px 11px;
-  color: #e6d49b;
-  background: #1b1913;
-  border: 1px solid #3b3320;
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
   border-radius: var(--radius);
   font-size: 11px;
   line-height: 1.4;
@@ -139,17 +270,17 @@ header {
 .warning strong {
   display: block;
   margin-bottom: 1px;
-  color: #f2df9d;
+  color: var(--warn-strong);
   font-weight: 650;
 }
 
 .warning span {
   display: block;
-  color: #aa9d77;
+  color: var(--warn-muted);
 }
 
 .warning code {
-  color: #d8c58d;
+  color: var(--warn-code);
 }
 
 .warning-icon {
@@ -159,7 +290,7 @@ header {
   place-items: center;
   flex: none;
   border-radius: 50%;
-  color: #16140f;
+  color: var(--warn-icon-fg);
   background: var(--warn);
   font-size: 11px;
   font-weight: 800;
@@ -195,7 +326,7 @@ header {
 
 .btn.primary {
   border-color: transparent;
-  color: #0f1620;
+  color: var(--on-accent);
   background: var(--accent);
 }
 
@@ -254,8 +385,8 @@ header {
 }
 
 .url-field:focus-within {
-  border-color: rgba(138, 180, 255, 0.55);
-  background: #191d24;
+  border-color: var(--focus-ring);
+  background: var(--field-focus-bg);
 }
 
 .url-icon {
@@ -276,7 +407,7 @@ header {
 }
 
 #manual-url::placeholder {
-  color: #69717d;
+  color: var(--placeholder);
 }
 
 .toolbar {
@@ -292,7 +423,7 @@ header {
   align-items: center;
   gap: 2px;
   padding: 2px;
-  background: #14171c;
+  background: var(--surface-3);
   border: 1px solid var(--stroke);
   border-radius: 9px;
 }
@@ -316,7 +447,7 @@ header {
 .tab.active {
   color: var(--text);
   background: var(--surface-2);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--shadow-1);
 }
 
 .toolbar-actions {
@@ -348,7 +479,7 @@ li {
 
 li:hover {
   border-color: var(--stroke-strong);
-  background: #1a1e24;
+  background: var(--surface-hover-2);
 }
 
 @keyframes rise {
@@ -370,7 +501,7 @@ li:hover {
   height: 56px;
   border-radius: 8px;
   overflow: hidden;
-  background: #1d2127;
+  background: var(--thumb-bg);
   border: 1px solid var(--stroke);
   display: grid;
   place-items: center;
@@ -405,8 +536,8 @@ li:hover {
   left: 4px;
   padding: 2px 5px;
   border-radius: 5px;
-  color: #0d1420;
-  background: rgba(224, 236, 255, 0.92);
+  color: var(--badge-fg);
+  background: var(--badge-bg);
   font-size: 8px;
   font-weight: 800;
   letter-spacing: 0.05em;
@@ -440,7 +571,7 @@ li:hover {
 
 .name {
   margin: 0;
-  color: #f0f2f5;
+  color: var(--text-strong);
   font-size: 12px;
   font-weight: 620;
   line-height: 1.35;
@@ -496,7 +627,7 @@ li [data-download] {
 
 .empty strong {
   margin-bottom: 3px;
-  color: #cbd0d8;
+  color: var(--text-2);
   font-size: 11.5px;
   font-weight: 600;
 }
@@ -548,7 +679,7 @@ details[open] .summary-arrow {
   gap: 9px;
   min-height: 32px;
   padding: 3px 0;
-  color: #b8bec8;
+  color: var(--text-3);
   font-size: 11px;
 }
 
@@ -558,9 +689,9 @@ details[open] .summary-arrow {
   height: 16px;
   flex: none;
   margin: 0;
-  border: 1px solid #3b424d;
+  border: 1px solid var(--checkbox-border);
   border-radius: 5px;
-  background: #15181d;
+  background: var(--surface-4);
   cursor: pointer;
 }
 
@@ -572,7 +703,7 @@ details[open] .summary-arrow {
 .settings .row input[type="checkbox"]:checked::after {
   content: '✓';
   display: block;
-  color: #0f1620;
+  color: var(--on-accent);
   font-size: 11px;
   font-weight: 900;
   line-height: 14px;
@@ -587,7 +718,7 @@ details[open] .summary-arrow {
   min-width: 92px;
   margin-left: auto;
   padding: 5px 7px;
-  color: #cbd0d8;
+  color: var(--text-2);
   background: var(--surface);
   border: 1px solid var(--stroke);
   border-radius: 7px;
@@ -602,4 +733,180 @@ details[open] .summary-arrow {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Master switch
+   --------------------------------------------------------------------------- */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-track {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--track);
+  border: 1px solid var(--stroke);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.switch input:checked + .switch-track {
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.switch input:checked + .switch-track::after {
+  transform: translateX(14px);
+  background: var(--on-accent);
+}
+
+.switch input:focus-visible + .switch-track {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Everything below the header dims while sniffing is off. */
+body.disabled .toolbar,
+body.disabled #list,
+body.disabled #empty,
+body.disabled #manual {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.paused {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 12px;
+  padding: 10px 11px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px dashed var(--stroke-strong);
+  border-radius: var(--radius);
+  font-size: 11px;
+}
+
+.paused[hidden] {
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Live progress inside a list item
+   --------------------------------------------------------------------------- */
+.progress {
+  margin-top: 6px;
+}
+
+.progress[hidden] {
+  display: none;
+}
+
+.progress-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+
+.progress-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 240ms ease;
+}
+
+/* Queued and probing have no measurable percentage yet. */
+.progress[data-state="queued"] .progress-fill,
+.progress[data-state="probing"] .progress-fill {
+  width: 35% !important;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: sweep 1.2s linear infinite;
+}
+
+@keyframes sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}
+
+.progress[data-state="completed"] .progress-fill { background: var(--ok); }
+.progress[data-state="failed"] .progress-fill { background: var(--bad); }
+.progress[data-state="canceled"] .progress-fill { background: var(--muted-2); }
+
+.progress-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--muted-2);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-meta .pstate {
+  color: var(--accent);
+  font-weight: 650;
+  text-transform: capitalize;
+}
+
+.progress[data-state="completed"] .pstate { color: var(--ok); }
+.progress[data-state="failed"] .pstate { color: var(--bad); }
+
+.progress-meta span:empty { display: none; }
+
+/* ---------------------------------------------------------------------------
+   Side panel layout
+   ---------------------------------------------------------------------------
+   The same document is used for the popup and the side panel; the panel is
+   resizable, so the fixed popup width has to go.
+*/
+html.panel,
+html.panel body {
+  width: 100%;
+  max-height: none;
+  height: auto;
+}
+
+html.panel #panel-btn {
+  display: none;
+}
+
+html.panel li {
+  min-height: 78px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
 }
