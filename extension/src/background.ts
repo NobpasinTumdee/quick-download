@@ -25,6 +25,7 @@
  *     chrome.storage.session, never in module scope.
  */
 
+import { installContextMenus, registerContextMenus } from './contextMenu.js';
 import {
   classify,
   cleanPageUrl,
@@ -629,6 +630,11 @@ chrome.runtime.onStartup.addListener(() => {
     await paintActionIcon(await isEnabled());
     await configureSidePanel();
   })();
+
+  // Chrome keeps context menus across restarts, so this is usually a no-op.
+  // It is here for the profile where they were lost anyway: installContextMenus
+  // clears before it creates, so replaying it costs nothing and repairs that.
+  installContextMenus();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -637,48 +643,22 @@ chrome.runtime.onInstalled.addListener(() => {
     await configureSidePanel();
   })();
 
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: 'qd-download',
-      title: 'Download with Quick Download',
-      contexts: ['link', 'video', 'audio', 'image'],
-    });
-    chrome.contextMenus.create({
-      id: 'qd-download-page',
-      title: 'Download video on this page (yt-dlp)',
-      contexts: ['page', 'frame'],
-    });
-    chrome.contextMenus.create({
-      id: 'qd-dashboard',
-      title: 'Open Quick Download dashboard',
-      contexts: ['action'],
-    });
-  });
+  installContextMenus();
 });
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  switch (info.menuItemId) {
-    case 'qd-dashboard':
-      void sendToHost({ type: 'open_dashboard' });
-      return;
-
-    case 'qd-download-page': {
-      // Hand the PAGE url to yt-dlp and let its extractor find the streams.
-      const page = cleanPageUrl(tab?.url ?? info.pageUrl ?? '');
-      if (page) {
-        void startDownload(page, { pageUrl: page, kind: 'site', title: tab?.title });
-      }
-      return;
-    }
-
-    case 'qd-download': {
-      const target = info.srcUrl || info.linkUrl || info.pageUrl;
-      if (target) {
-        void startDownload(target, { pageUrl: tab?.url ?? info.pageUrl, title: tab?.title });
-      }
-      return;
-    }
-  }
+/**
+ * The click handler is registered at the top level, not inside onInstalled: a
+ * context-menu click is one of the events that wakes a sleeping service worker,
+ * and a listener added asynchronously would miss the very click that started it.
+ *
+ * Everything it needs is injected, which keeps the routing logic testable and
+ * keeps one path to the engine - so a right-click download picks up the save
+ * path, the cookie allowlist and the default quality exactly like the popup.
+ */
+registerContextMenus({
+  startDownload: (url, opts) => startDownload(url, opts),
+  openDashboard: () => sendToHost({ type: 'open_dashboard' }),
+  notificationsEnabled: async () => (await getSettings()).notifyOnComplete !== false,
 });
 
 // ---------------------------------------------------------------------------
