@@ -40,7 +40,7 @@ xcopy /E /I /Y bin ReleaseTemp\bin >nul
 echo @echo off > ReleaseTemp\install_host.bat
 echo title Quick Download - Host Setup >> ReleaseTemp\install_host.bat
 echo set /p EXT_ID="Paste your Chrome Extension ID here and press Enter: " >> ReleaseTemp\install_host.bat
-echo powershell.exe -ExecutionPolicy Bypass -File "host\install-windows.ps1" -ExtensionId %%EXT_ID%% >> ReleaseTemp\install_host.bat
+echo powershell.exe -ExecutionPolicy Bypass -File "host\install-windows.ps1" -ExtensionId %%EXT_ID%% -SkipBuild >> ReleaseTemp\install_host.bat
 echo echo Setup Complete! You can close this window. >> ReleaseTemp\install_host.bat
 echo pause >> ReleaseTemp\install_host.bat
 
