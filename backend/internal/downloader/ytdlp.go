@@ -15,6 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/quick-download/backend/internal/config"
 )
@@ -56,6 +59,12 @@ func (m *Manager) runYtDlp(ctx context.Context, job *Job, kind Kind) error {
 	args := m.ytDlpArgs(job, tools)
 	cmd := exec.CommandContext(ctx, tools.YtDlp.Path, args...)
 	cmd.Dir = job.Dir()
+
+	// Belt and braces for the encoding problem --encoding utf-8 solves below.
+	// These are what a pip-installed yt-dlp running on the system Python obeys;
+	// the frozen yt-dlp.exe ignores them, which is why the flag does the real
+	// work. (dedupEnv keeps the last value, so these override an inherited one.)
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
 
 	// yt-dlp spawns ffmpeg as a child; put the whole thing in its own process
 	// group so cancelling kills the tree instead of orphaning the muxer.
@@ -141,6 +150,27 @@ func (m *Manager) runYtDlp(ctx context.Context, job *Job, kind Kind) error {
 // ---------------------------------------------------------------------------
 // Output verification
 // ---------------------------------------------------------------------------
+//
+// A clean exit is not proof of a download: --ignore-errors makes yt-dlp exit 0
+// after an extraction that produced nothing. But the check that catches those
+// must never fail a download that did work, and the name yt-dlp announces is
+// only a hint at the name it finally writes:
+//
+//   - the container changes (a failed mp4 merge falls back to .mkv);
+//   - a post-processor replaces the file entirely (--extract-audio turns
+//     "Clip.webm" into "Clip.mp3" and deletes the original);
+//   - "%(title).150B" truncates a long title mid-word;
+//   - filename sanitisation rewrites the characters Windows forbids; and
+//   - when yt-dlp's stdout is a pipe, Python encodes it with the console code
+//     page, and every character that page cannot represent is printed as "?".
+//     The path we parsed can therefore be literally unspellable. (runYtDlp now
+//     forces UTF-8 on the child to stop this at the source, but the fallbacks
+//     still have to cope with output from a build that ignores it.)
+//
+// So resolution is a ladder from exact to fuzzy, and every rung below the first
+// is matched against a real directory listing rather than a glob pattern: a
+// pattern built from a name containing "[", "*" or "?" does not mean what it
+// says, and on Windows it cannot be escaped either.
 
 // Suffixes yt-dlp leaves behind for work in progress. A half-written file is
 // not a completed download, so these never count as a match.
@@ -150,70 +180,385 @@ var incompleteSuffixes = []string{".part", ".ytdl", ".temp", ".tmp"}
 // downloads separately, e.g. "Clip.f137.mp4" for the video half of a merge.
 var perTrackSuffixRe = regexp.MustCompile(`\.f\d+$`)
 
+// idInBracketsRe pulls the id out of a name built by our output template,
+// "%(title).150B [%(id)s].%(ext)s". The id is the one part of the name that
+// truncation, sanitisation and encoding loss all leave alone, which makes it
+// the strongest handle we have on the file.
+var idInBracketsRe = regexp.MustCompile(`\[([A-Za-z0-9_.-]{3,})\]$`)
+
+// urlIDRe recovers a video id straight from the page URL, for the case where
+// yt-dlp announced no usable name at all.
+var urlIDRe = regexp.MustCompile(`(?:[?&]v=|youtu\.be/|/shorts/|/embed/|/watch/)([A-Za-z0-9_-]{6,})`)
+
+// mediaExts gates the last-resort scan. Anything outside this list (a
+// thumbnail, a .json info dump, a subtitle) is never adopted as the download.
+var mediaExts = map[string]bool{
+	".mp4": true, ".mkv": true, ".webm": true, ".mov": true, ".avi": true,
+	".flv": true, ".ts": true, ".m4v": true, ".mpg": true, ".mpeg": true,
+	".3gp": true, ".ogv": true, ".mp3": true, ".m4a": true, ".opus": true,
+	".ogg": true, ".oga": true, ".aac": true, ".flac": true, ".wav": true,
+	".wma": true,
+}
+
+// candidateFile is one finished file found in a directory we searched.
+type candidateFile struct {
+	path  string
+	stem  string // base name without its extension
+	ext   string // lower cased, with the dot
+	size  int64
+	mod   time.Time
+	track bool // the name carries a per-track ".f137" suffix
+}
+
 // verifyYtDlpOutput confirms that a successful-looking run actually produced a
 // file, and adopts the real path when yt-dlp chose a different one.
-//
-// Two things routinely move the goalposts between the name yt-dlp announces and
-// the name it finally writes:
-//
-//   - the container changes (a failed mp4 merge falls back to .mkv), and
-//   - a post-processor replaces the file entirely (--extract-audio turns
-//     "Clip.webm" into "Clip.mp3" and deletes the original).
-//
-// So an exact miss is not yet a failure: we look for any sibling sharing the
-// stem before concluding that nothing was downloaded.
 func (m *Manager) verifyYtDlpOutput(job *Job, tail *ringBuffer) error {
 	job.mu.RLock()
+	announced := append([]string(nil), job.outputs...)
 	predicted := job.finalPath
 	dir := job.dir
+	started := job.startedAt
+	pageURL := job.URL
 	job.mu.RUnlock()
 
-	// No Destination line at all means yt-dlp never started a download. That is
-	// the phantom completion in its purest form.
-	if predicted == "" {
-		return phantomError(tail, "yt-dlp never reported an output file")
-	}
-
-	// 1. The exact path it told us about.
-	if isRealFile(predicted) {
+	// 1. The exact path yt-dlp last told us about. This is the overwhelmingly
+	//    common case, and it costs one stat instead of a directory listing.
+	if predicted != "" && isRealFile(predicted) {
 		return nil
 	}
 
-	// 2. Anything sharing the stem, for the container/post-processor cases.
-	if found := findByStem(dir, predicted); found != "" {
-		log.Printf("job %s: output resolved to %s (predicted %s)", job.ID, found, predicted)
+	names := normalizePaths(dir, append(announced, predicted))
+	found, how := resolveOutput(names, dir, pageURL, started, func(p string) bool {
+		return m.pathClaimedElsewhere(job.ID, p)
+	})
+	if found != "" {
+		log.Printf("job %s: output resolved by %s -> %s (yt-dlp announced %q)",
+			job.ID, how, found, predicted)
 		job.setFinalPath(found, true)
 		return nil
 	}
 
-	return phantomError(tail, fmt.Sprintf("expected %s", filepath.Base(predicted)))
+	if len(names) == 0 {
+		return phantomError(tail, "yt-dlp never reported an output file")
+	}
+	return phantomError(tail, fmt.Sprintf("expected %s", filepath.Base(names[len(names)-1])))
 }
 
-// findByStem looks for a finished file next to the predicted one, sharing its
-// name up to the extension. It returns "" when there is nothing plausible.
-func findByStem(dir, predicted string) string {
-	base := filepath.Base(predicted)
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-
-	// "Clip.f137" is the video half of a merge; the merged file is "Clip.mp4",
-	// so the format id has to come off before matching.
-	candidates := []string{stem}
-	if trimmed := perTrackSuffixRe.ReplaceAllString(stem, ""); trimmed != stem && trimmed != "" {
-		candidates = append(candidates, trimmed)
+// resolveOutput walks the ladder. names are the paths yt-dlp announced, in the
+// order it announced them, so the last is the most likely; dir is the job's own
+// output directory. claimed reports whether a path already belongs to a
+// different job.
+//
+// It returns the resolved path and the name of the rung that found it, or "".
+func resolveOutput(names []string, dir, pageURL string, started time.Time, claimed func(string) bool) (string, string) {
+	files := scanFinishedFiles(searchDirs(dir, names))
+	if len(files) == 0 {
+		return "", ""
 	}
 
-	for _, candidate := range candidates {
-		matches, err := filepath.Glob(filepath.Join(dir, globQuote(candidate)+".*"))
-		if err != nil {
+	// Stems to match on, most recently announced first, each also stripped of
+	// its per-track suffix: only "Clip.f137.mp4" may have been announced while
+	// the merged "Clip.mp4" is what survived.
+	stems := make([]string, 0, len(names)*2)
+	for i := len(names) - 1; i >= 0; i-- {
+		base := filepath.Base(names[i])
+		stem := strings.TrimSuffix(base, filepath.Ext(base))
+		if stem == "" {
 			continue
 		}
-		for _, match := range matches {
-			if isRealFile(match) {
-				return match
-			}
+		stems = appendUnique(stems, stem)
+		if trimmed := perTrackSuffixRe.ReplaceAllString(stem, ""); trimmed != stem && trimmed != "" {
+			stems = appendUnique(stems, trimmed)
 		}
 	}
-	return ""
+
+	// 2. The same name under a different extension. Covers the changed
+	//    container and the post-processor that rewrote the file.
+	for _, stem := range stems {
+		if hit := best(filterFiles(files, func(f candidateFile) bool {
+			return strings.EqualFold(f.stem, stem)
+		})); hit != "" {
+			return hit, "stem"
+		}
+	}
+
+	// 3. The same name with "?" standing in for the characters the console
+	//    encoding could not print. One "?" is one lost character, so this is a
+	//    single-character wildcard match rather than a fuzzy one.
+	for _, stem := range stems {
+		if !strings.ContainsRune(stem, '?') {
+			continue
+		}
+		if hit := best(filterFiles(files, func(f candidateFile) bool {
+			return wildcardEqual(stem, f.stem)
+		})); hit != "" {
+			return hit, "encoding-lossy name"
+		}
+	}
+
+	// 4. The id in brackets, which our output template always appends and no
+	//    amount of sanitising touches. The strongest heuristic we have.
+	for _, id := range outputIDs(stems, pageURL) {
+		marker := "[" + id + "]"
+		if hit := best(filterFiles(files, func(f candidateFile) bool {
+			return strings.Contains(f.stem, marker)
+		})); hit != "" {
+			return hit, "video id"
+		}
+	}
+
+	// 5. The ASCII skeleton. When yt-dlp printed through a code page that
+	//    could not represent the title, every character outside that page was
+	//    dropped (errors="ignore") or replaced - but the ASCII survived intact
+	//    and in order. Comparing only the ASCII letters and digits therefore
+	//    matches the file exactly, whatever script the title was written in.
+	for _, stem := range stems {
+		skeleton := asciiFold(stem)
+		if len(skeleton) < 6 {
+			continue // a title that is almost entirely non-ASCII leaves nothing to match
+		}
+		if hit := best(filterFiles(files, func(f candidateFile) bool {
+			return asciiFold(f.stem) == skeleton
+		})); hit != "" {
+			return hit, "ASCII skeleton"
+		}
+	}
+
+	// 6. Fuzzy stem: compare with punctuation, spaces and case removed, and
+	//    accept a prefix either way round so a truncated title still matches.
+	for _, stem := range stems {
+		folded := foldName(stem)
+		if len(folded) < 8 {
+			continue // too little signal to be sure it is the same file
+		}
+		if hit := best(filterFiles(files, func(f candidateFile) bool {
+			other := foldName(f.stem)
+			if len(other) < 8 {
+				return false
+			}
+			return strings.HasPrefix(folded, other) || strings.HasPrefix(other, folded)
+		})); hit != "" {
+			return hit, "fuzzy name"
+		}
+	}
+
+	// 7. Last resort: the name told us nothing, so go by time. yt-dlp exited 0,
+	//    and exactly one media file appeared in the output directory while this
+	//    job was running - that is the download, whatever it ended up called.
+	//
+	//    Deliberately narrow, because the download directory is usually shared
+	//    with the browser's own downloads: it must be the only candidate, and
+	//    unclaimed by any other job. Two candidates is not a tie to break, it is
+	//    a question we cannot answer, and adopting the wrong file is worse than
+	//    reporting the failure.
+	if started.IsZero() {
+		return "", ""
+	}
+	fresh := filterFiles(files, func(f candidateFile) bool {
+		return mediaExts[f.ext] && writtenDuring(f.mod, started) && !claimed(f.path)
+	})
+	// The separate video and audio tracks of a merge are not the download, so
+	// they never make the choice ambiguous as long as something else survived.
+	if merged := filterFiles(fresh, func(f candidateFile) bool { return !f.track }); len(merged) > 0 {
+		fresh = merged
+	}
+	switch len(fresh) {
+	case 1:
+		return fresh[0].path, "the only file written during the run"
+	case 0:
+		return "", ""
+	default:
+		log.Printf("%d media files were written while the job ran; refusing to guess which is the download", len(fresh))
+		return "", ""
+	}
+}
+
+// writtenDuring reports whether a file was created or last written while the
+// job was running. The slack absorbs both clock granularity (FAT timestamps
+// have a two-second resolution) and the gap between marking the job started and
+// the child process actually opening the file.
+func writtenDuring(mod, started time.Time) bool {
+	const slack = 2 * time.Second
+	return !mod.Before(started.Add(-slack)) && !mod.After(time.Now().Add(slack))
+}
+
+// searchDirs is the job directory plus every directory an announced name lives
+// in, deduplicated. The extra directories matter when a post-processor moves
+// the file somewhere else.
+func searchDirs(dir string, names []string) []string {
+	var dirs []string
+	if dir != "" {
+		dirs = append(dirs, filepath.Clean(dir))
+	}
+	for _, name := range names {
+		if d := filepath.Dir(name); d != "" && d != "." {
+			dirs = appendUniqueFold(dirs, d)
+		}
+	}
+	return dirs
+}
+
+// scanFinishedFiles lists the finished, non-empty files in the given
+// directories. A listing beats a glob here: the names we match against
+// routinely contain "[", and on Windows filepath.Glob cannot escape it.
+func scanFinishedFiles(dirs []string) []candidateFile {
+	var out []candidateFile
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			log.Printf("cannot list %s while resolving an output file: %v", dir, err)
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || info.Size() == 0 || isIncompleteName(entry.Name()) {
+				continue
+			}
+			stem := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+			out = append(out, candidateFile{
+				path:  filepath.Join(dir, entry.Name()),
+				stem:  stem,
+				ext:   strings.ToLower(filepath.Ext(entry.Name())),
+				size:  info.Size(),
+				mod:   info.ModTime(),
+				track: perTrackSuffixRe.MatchString(stem),
+			})
+		}
+	}
+	return out
+}
+
+func filterFiles(files []candidateFile, keep func(candidateFile) bool) []candidateFile {
+	var out []candidateFile
+	for _, f := range files {
+		if keep(f) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// best picks the most plausible of several matches: the merged file over a
+// per-track one (both survive when yt-dlp is told to keep the parts), then the
+// largest, which is the video rather than its audio track.
+func best(matches []candidateFile) string {
+	var winner *candidateFile
+	for i := range matches {
+		c := &matches[i]
+		switch {
+		case winner == nil:
+			winner = c
+		case c.track != winner.track:
+			if !c.track {
+				winner = c
+			}
+		case c.size > winner.size:
+			winner = c
+		}
+	}
+	if winner == nil {
+		return ""
+	}
+	return winner.path
+}
+
+// outputIDs collects the "[id]" suffixes of the announced names, falling back
+// to an id parsed out of the page URL.
+func outputIDs(stems []string, pageURL string) []string {
+	var ids []string
+	for _, stem := range stems {
+		clean := perTrackSuffixRe.ReplaceAllString(stem, "")
+		if mm := idInBracketsRe.FindStringSubmatch(clean); len(mm) == 2 {
+			ids = appendUnique(ids, mm[1])
+		}
+	}
+	if mm := urlIDRe.FindStringSubmatch(pageURL); len(mm) == 2 {
+		ids = appendUnique(ids, mm[1])
+	}
+	return ids
+}
+
+// wildcardEqual compares two names treating "?" and U+FFFD in the pattern as
+// any single character - the two things a lossy encoder leaves behind when it
+// substitutes rather than deletes. Both sides are folded to lower case, since
+// Windows filenames are.
+func wildcardEqual(pattern, name string) bool {
+	p, n := []rune(strings.ToLower(pattern)), []rune(strings.ToLower(name))
+	if len(p) != len(n) {
+		return false
+	}
+	for i := range p {
+		if p[i] != '?' && p[i] != '\uFFFD' && p[i] != n[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// asciiFold reduces a name to its ASCII letters and digits, lower cased. It is
+// deliberately blind to everything else: the characters it drops are exactly
+// the ones a lossy code page loses, so two names that differ only by that loss
+// fold to the same string.
+func asciiFold(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if r < utf8.RuneSelf && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// foldName reduces a name to its letters and digits, lower cased, so that two
+// spellings of the same title compare equal.
+func foldName(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// normalizePaths cleans the raw strings scraped from yt-dlp's output into
+// absolute, native-separator paths, dropping blanks and duplicates while
+// keeping the announcement order.
+//
+// Note that we standardise on the OS separator rather than forward slashes:
+// os.Stat accepts either on Windows, but any name comparison has to pick one,
+// and it must be the one os.ReadDir hands back.
+func normalizePaths(dir string, raw []string) []string {
+	out := make([]string, 0, len(raw))
+	for _, r := range raw {
+		if p := normalizePath(dir, r); p != "" {
+			out = appendUniqueFold(out, p)
+		}
+	}
+	return out
+}
+
+// normalizePath makes one announced path absolute and canonical. yt-dlp prints
+// the path as the output template spelled it, which is absolute in our case,
+// but a post-processor that prints a bare filename means it relative to the
+// working directory - which is the job's own directory.
+func normalizePath(dir, raw string) string {
+	p := strings.TrimSpace(raw)
+	p = strings.Trim(p, `"`)
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	p = filepath.FromSlash(p)
+	if !filepath.IsAbs(p) && dir != "" {
+		p = filepath.Join(dir, p)
+	}
+	return filepath.Clean(p)
 }
 
 // isRealFile reports whether a path is a finished, non-empty file.
@@ -222,39 +567,46 @@ func isRealFile(path string) bool {
 	if err != nil || info.IsDir() || info.Size() == 0 {
 		return false
 	}
+	return !isIncompleteName(path)
+}
+
+func isIncompleteName(path string) bool {
 	lower := strings.ToLower(path)
 	for _, suffix := range incompleteSuffixes {
 		if strings.HasSuffix(lower, suffix) {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
 }
 
-// globQuote makes a literal string safe to embed in a filepath.Glob pattern.
-//
-// This matters more than it looks: the default output template is
-// "%(title)s [%(id)s].%(ext)s", so virtually every filename contains square
-// brackets, and "[abc123]" in a pattern is a character class matching ONE of
-// those characters. Backslash escaping is not an option either - Glob disables
-// it on Windows, where the separator is a backslash. Wrapping each
-// metacharacter in its own single-character class works on every platform.
-func globQuote(s string) string {
-	var b strings.Builder
-	b.Grow(len(s) + 8)
-	for _, r := range s {
-		switch r {
-		case '*':
-			b.WriteString("[*]")
-		case '?':
-			b.WriteString("[?]")
-		case '[':
-			b.WriteString("[[]")
-		default:
-			b.WriteRune(r)
+// pathClaimedElsewhere reports whether another job already owns a file, so the
+// last-resort scan cannot adopt a concurrent download's output.
+func (m *Manager) pathClaimedElsewhere(selfID, path string) bool {
+	for _, snap := range m.Snapshot() {
+		if snap.ID != selfID && snap.Path != "" && strings.EqualFold(snap.Path, path) {
+			return true
 		}
 	}
-	return b.String()
+	return false
+}
+
+func appendUnique(list []string, v string) []string {
+	for _, existing := range list {
+		if existing == v {
+			return list
+		}
+	}
+	return append(list, v)
+}
+
+func appendUniqueFold(list []string, v string) []string {
+	for _, existing := range list {
+		if strings.EqualFold(existing, v) {
+			return list
+		}
+	}
+	return append(list, v)
 }
 
 // phantomError builds the message shown on the card, carrying yt-dlp's own last
@@ -308,6 +660,22 @@ func (m *Manager) ytDlpArgs(job *Job, tools config.Tools) []string {
 		"--no-colors",   // no ANSI escapes to strip
 		"--no-playlist", // a page URL means "this video", not "all 400 of them"
 		"--no-warnings",
+
+		// Print in UTF-8, whatever the machine's code page is.
+		//
+		// This is not cosmetic. yt-dlp encodes everything it prints with
+		// locale.getpreferredencoding() - the ANSI code page, cp874 on a Thai
+		// Windows - and it does so with errors="ignore". A Japanese title is
+		// therefore not mangled but SILENTLY DELETED on its way through the
+		// pipe: "米津玄師 IRIS OUT 第76回.mp4" arrives as " IRIS OUT 76.mp4",
+		// naming a file that does not exist, and the output check then calls a
+		// perfectly good download a phantom completion.
+		//
+		// PYTHONIOENCODING does not fix this (the frozen yt-dlp.exe ignores it,
+		// and preferredencoding() consults the locale rather than the stream),
+		// and neither does chcp: the console code page is irrelevant to a pipe.
+		// Verified against yt-dlp.exe on a cp874 machine - only this flag works.
+		"--encoding", "utf-8",
 
 		// Keep going when one item in a tab/playlist context errors out rather
 		// than aborting the whole job. This can make yt-dlp exit 0 having
@@ -380,8 +748,16 @@ var (
 	destinationRe = regexp.MustCompile(`^\[download\]\s+Destination:\s+(.+)$`)
 	// A post-processor announces the file it is creating, which supersedes the
 	// per-track download destination: --extract-audio writes "Clip.mp3" and
-	// deletes the "Clip.webm" the download step named.
-	postDestinationRe = regexp.MustCompile(`^\[(?:ExtractAudio|VideoConvertor|VideoRemuxer|Fixup\w*)\]\s+Destination:\s+(.+)$`)
+	// deletes the "Clip.webm" the download step named. Any tag other than
+	// [download] is a post-processor, so match them all rather than keeping a
+	// list that goes stale with every yt-dlp release.
+	postDestinationRe = regexp.MustCompile(`^\[(?:[A-Za-z0-9_]+)\]\s+Destination:\s+(.+)$`)
+	// "[MoveFiles] Moving file "C:\tmp\x.mp4" to "C:\dl\x.mp4"" - the last
+	// word on where a file ended up, and the one line that can move it out of
+	// the directory we would otherwise search.
+	moveFilesRe = regexp.MustCompile(`^\[MoveFiles\]\s+Moving file\s+"(.+)"\s+to\s+"(.+)"$`)
+	// "[FixupM3u8] Fixing MPEG-TS in MP4 container of "C:\dl\x.mp4""
+	fixupRe = regexp.MustCompile(`^\[Fixup\w*\]\s+.*\bof\s+"(.+)"$`)
 	// "[Merger] Merging formats into "C:\path\file.mp4""
 	mergerRe = regexp.MustCompile(`Merging formats into "(.+)"`)
 	// "[download] C:\path\file.mp4 has already been downloaded"
@@ -392,6 +768,13 @@ var (
 	// many separate tracks will be fetched before the merge.
 	formatPlanRe = regexp.MustCompile(`Downloading \d+ format\(s\):\s*(\S+)`)
 )
+
+// normalizeJobPath cleans a path scraped from yt-dlp's output against the
+// job's own directory, so that everything downstream - the snapshot the popup
+// renders, and the verification below - deals in one spelling.
+func (m *Manager) normalizeJobPath(job *Job, raw string) string {
+	return normalizePath(job.Dir(), raw)
+}
 
 // countTracks turns a format spec like "137+140" into the number of separate
 // downloads yt-dlp will perform.
@@ -404,6 +787,10 @@ func (m *Manager) consumeYtDlpLine(job *Job, line string) {
 	if line == "" {
 		return
 	}
+	// A build that ignores --encoding can emit code-page bytes, which are not
+	// valid UTF-8. Left alone they would travel into the WebSocket JSON and the
+	// log as broken text; replaced, they at least compare consistently.
+	line = strings.ToValidUTF8(line, "\uFFFD")
 
 	switch {
 	case strings.HasPrefix(line, progressSentinel):
@@ -423,20 +810,32 @@ func (m *Manager) consumeYtDlpLine(job *Job, line string) {
 
 	// Filenames: the merger's output wins, it is the file the user keeps.
 	if mm := mergerRe.FindStringSubmatch(line); len(mm) == 2 {
-		job.setFinalPath(strings.TrimSpace(mm[1]), true)
+		job.setFinalPath(m.normalizeJobPath(job, mm[1]), true)
 		job.setPhase("merging")
 		m.Broadcast()
 		return
 	}
-	if mm := postDestinationRe.FindStringSubmatch(line); len(mm) == 2 {
-		job.setFinalPath(strings.TrimSpace(mm[1]), true)
+	if mm := moveFilesRe.FindStringSubmatch(line); len(mm) == 3 {
+		job.setFinalPath(m.normalizeJobPath(job, mm[2]), true)
 		m.Broadcast()
 		return
 	}
+	if mm := fixupRe.FindStringSubmatch(line); len(mm) == 2 {
+		job.setFinalPath(m.normalizeJobPath(job, mm[1]), true)
+		m.Broadcast()
+		return
+	}
+	// [download] is the per-track downloader; every other tag is a
+	// post-processor, whose destination replaces what the download step named.
 	if mm := destinationRe.FindStringSubmatch(line); len(mm) == 2 {
 		// Each Destination line starts a new track.
 		job.beginStream()
-		job.setFinalPath(strings.TrimSpace(mm[1]), false)
+		job.setFinalPath(m.normalizeJobPath(job, mm[1]), false)
+		m.Broadcast()
+		return
+	}
+	if mm := postDestinationRe.FindStringSubmatch(line); len(mm) == 2 {
+		job.setFinalPath(m.normalizeJobPath(job, mm[1]), true)
 		m.Broadcast()
 		return
 	}
@@ -445,7 +844,7 @@ func (m *Manager) consumeYtDlpLine(job *Job, line string) {
 		return
 	}
 	if mm := alreadyRe.FindStringSubmatch(line); len(mm) == 2 {
-		job.setFinalPath(strings.TrimSpace(mm[1]), true)
+		job.setFinalPath(m.normalizeJobPath(job, mm[1]), true)
 		job.markExternalComplete()
 		m.Broadcast()
 		return

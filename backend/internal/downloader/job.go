@@ -78,14 +78,18 @@ type Job struct {
 	state           State
 	errMsg          string
 	finalPathLocked bool
-	mime            string
-	speed           float64 // bytes/sec, exponentially smoothed
-	createdAt       time.Time
-	startedAt       time.Time
-	finishedAt      time.Time
-	chunks          []*Chunk
-	req             Request
-	cancel          context.CancelFunc
+	// outputs is every path yt-dlp announced during the run, in order. The last
+	// one is usually the file, but when it is not, the earlier names are the
+	// best clue we have about what to look for on disk.
+	outputs    []string
+	mime       string
+	speed      float64 // bytes/sec, exponentially smoothed
+	createdAt  time.Time
+	startedAt  time.Time
+	finishedAt time.Time
+	chunks     []*Chunk
+	req        Request
+	cancel     context.CancelFunc
 
 	// Engine dispatch and streaming metadata.
 	engine string // EngineHTTP or EngineYtDlp
@@ -247,6 +251,7 @@ func (j *Job) setFinalPath(path string, authoritative bool) {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	j.rememberOutputLocked(path)
 	if j.finalPathLocked && !authoritative {
 		return
 	}
@@ -255,6 +260,21 @@ func (j *Job) setFinalPath(path string, authoritative bool) {
 	if authoritative {
 		j.finalPathLocked = true
 	}
+}
+
+// rememberOutputLocked records a path yt-dlp mentioned, keeping the list short
+// and free of duplicates. A locked final path does not stop this: a name we
+// then rejected for display can still be the one that exists on disk.
+func (j *Job) rememberOutputLocked(path string) {
+	for _, existing := range j.outputs {
+		if existing == path {
+			return
+		}
+	}
+	if len(j.outputs) >= 32 {
+		j.outputs = j.outputs[1:]
+	}
+	j.outputs = append(j.outputs, path)
 }
 
 // setProcess remembers the running child so Cancel can kill its whole tree.

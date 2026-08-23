@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // execute drives one job from probe to finished file.
@@ -619,10 +620,27 @@ func sanitizeFilename(name string) string {
 		name = "_" + name
 	}
 	if len(name) > 180 {
+		// Truncate on a rune boundary: half a multi-byte character is invalid
+		// UTF-8, and every layer downstream - the command line we hand to
+		// yt-dlp, the JSON the popup renders - would substitute U+FFFD for it.
 		ext := filepath.Ext(name)
-		name = name[:180-len(ext)] + ext
+		name = trimBytes(name, 180-len(ext)) + ext
 	}
 	return name
+}
+
+// trimBytes cuts s to at most n bytes without splitting a rune.
+func trimBytes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // uniquePath avoids clobbering an existing file: video.mp4 -> video (1).mp4.
