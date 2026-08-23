@@ -10,7 +10,10 @@ import { parseDomainList } from './filters.js';
 import { normaliseUrl, toProgressMap, type ProgressMap } from './progress.js';
 import {
   AUTO_CLEANUP_DELAY_MS,
+  FLOATING_BUTTON_MARGIN_MAX,
+  FLOATING_BUTTON_MARGIN_MIN,
   QUALITY_LABELS,
+  type FloatingButtonPosition,
   type EngineInfo,
   type HostResponse,
   type JobProgress,
@@ -415,6 +418,9 @@ async function loadSettings(): Promise<Settings | undefined> {
   $<HTMLInputElement>('set-thumbs').checked = s.captureThumbnails;
   $<HTMLSelectElement>('set-minimage').value = String(s.minImageBytes);
   $<HTMLSelectElement>('set-quality').value = s.defaultQuality ?? 'best';
+  $<HTMLInputElement>('set-fab').checked = s.floatingButtonEnabled !== false;
+  $<HTMLSelectElement>('set-fab-position').value = s.floatingButtonPosition ?? 'top-right';
+  $<HTMLInputElement>('set-fab-margin').value = String(s.floatingButtonMargin ?? 10);
   $<HTMLInputElement>('set-notify').checked = s.notifyOnComplete !== false;
   $<HTMLInputElement>('set-autoclean').checked = s.autoCleanup !== false;
   $<HTMLInputElement>('set-savepath').value = s.savePath ?? '';
@@ -612,7 +618,27 @@ $<HTMLInputElement>('set-savepath').addEventListener('input', (e) => {
   showPathStatus((e.target as HTMLInputElement).value);
 });
 
+$<HTMLSelectElement>('set-fab-position').addEventListener('change', (e) => {
+  const floatingButtonPosition = (e.target as HTMLSelectElement).value as FloatingButtonPosition;
+  if (settings) settings.floatingButtonPosition = floatingButtonPosition;
+  void ask({ kind: 'setSettings', settings: { floatingButtonPosition } });
+});
+
+$<HTMLInputElement>('set-fab-margin').addEventListener('change', (e) => {
+  const input = e.target as HTMLInputElement;
+  // The content script clamps this too - it has to, since storage can be
+  // written from anywhere - but correcting the field is what tells the user.
+  const floatingButtonMargin = Math.min(
+    FLOATING_BUTTON_MARGIN_MAX,
+    Math.max(FLOATING_BUTTON_MARGIN_MIN, Math.round(Number(input.value) || 0)),
+  );
+  input.value = String(floatingButtonMargin);
+  if (settings) settings.floatingButtonMargin = floatingButtonMargin;
+  void ask({ kind: 'setSettings', settings: { floatingButtonMargin } });
+});
+
 for (const [id, key] of [
+  ['set-fab', 'floatingButtonEnabled'],
   ['set-notify', 'notifyOnComplete'],
   ['set-autoclean', 'autoCleanup'],
 ] as Array<[string, keyof Settings]>) {

@@ -137,6 +137,26 @@
         <input type="checkbox" id="set-autoclean" />
         <span>Remove finished items after 5s</span>
       </label>
+      <label class="row">
+        <input type="checkbox" id="set-fab" />
+        <span>Floating button on videos <em>(hover to download)</em></span>
+      </label>
+      <label class="row select-row">
+        <span>Button corner</span>
+        <select id="set-fab-position">
+          <option value="top-right">Top right</option>
+          <option value="top-left">Top left</option>
+          <option value="bottom-right">Bottom right</option>
+          <option value="bottom-left">Bottom left</option>
+        </select>
+      </label>
+      <label class="row select-row">
+        <span>Button margin</span>
+        <span class="number-field">
+          <input type="number" id="set-fab-margin" min="0" max="200" step="2" />
+          <span class="unit">px</span>
+        </span>
+      </label>
       <label class="row select-row">
         <span>Ignore images under</span>
         <select id="set-minimage">

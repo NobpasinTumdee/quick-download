@@ -324,8 +324,14 @@ interface ScannedMediaLocal {
   const MIN_VIDEO_H = 90;
   /** Grace period so the pointer can travel from the video onto the button. */
   const HIDE_DELAY_MS = 240;
-  const INSET = 10;
   const FAB_SIZE = 34;
+
+  /** Mirrors Settings in types.ts; this file cannot import, so it re-declares. */
+  type FabCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+  const FAB_CORNERS: FabCorner[] = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+  const DEFAULT_CORNER: FabCorner = 'top-right';
+  const DEFAULT_MARGIN = 10;
+  const MARGIN_MAX = 200;
 
   let fab: HTMLButtonElement | null = null;
   let fabMark: HTMLSpanElement | null = null;
@@ -334,6 +340,8 @@ interface ScannedMediaLocal {
   let frameRequest = 0;
   let tracking = false;
   let buttonEnabled = true;
+  let corner: FabCorner = DEFAULT_CORNER;
+  let margin = DEFAULT_MARGIN;
   let observer: MutationObserver | null = null;
   let pointerWatching = false;
   let recountQueued = false;
@@ -414,6 +422,24 @@ interface ScannedMediaLocal {
     return rect;
   }
 
+  /**
+   * Where the button goes for the chosen corner.
+   *
+   * Only left/top are ever written. The button is fixed to the viewport and
+   * anchored to the video's rectangle, so positioning it from `right`/`bottom`
+   * would mean measuring against the window instead of the video - and any
+   * stale value of theirs would fight the one we do set. The stylesheet pins
+   * both to `auto` so nothing can reintroduce them.
+   */
+  function cornerOf(rect: DOMRect): { left: number; top: number } {
+    const atRight = corner === 'top-right' || corner === 'bottom-right';
+    const atBottom = corner === 'bottom-left' || corner === 'bottom-right';
+    return {
+      left: atRight ? rect.right - FAB_SIZE - margin : rect.left + margin,
+      top: atBottom ? rect.bottom - FAB_SIZE - margin : rect.top + margin,
+    };
+  }
+
   function position(): void {
     if (!fab || !anchor) return;
     const rect = anchorRect(anchor);
@@ -421,9 +447,10 @@ interface ScannedMediaLocal {
       hide();
       return;
     }
+    const spot = cornerOf(rect);
     // Clamped to the viewport so a video hanging off the edge still shows it.
-    const left = Math.min(Math.max(INSET, rect.right - FAB_SIZE - INSET), innerWidth - FAB_SIZE - 2);
-    const top = Math.min(Math.max(INSET, rect.top + INSET), innerHeight - FAB_SIZE - 2);
+    const left = Math.min(Math.max(0, spot.left), innerWidth - FAB_SIZE - 2);
+    const top = Math.min(Math.max(0, spot.top), innerHeight - FAB_SIZE - 2);
     fab.style.left = `${Math.round(left)}px`;
     fab.style.top = `${Math.round(top)}px`;
   }
@@ -662,16 +689,44 @@ interface ScannedMediaLocal {
     removeFab();
   });
 
+  interface FabSettings {
+    enabled?: boolean;
+    floatingButtonEnabled?: boolean;
+    floatingButtonPosition?: string;
+    floatingButtonMargin?: number;
+  }
+
+  /**
+   * Storage can be written by anything - an older build, a hand-edited value,
+   * a half-typed number in the popup - so every setting is validated here
+   * rather than trusted. An out-of-range margin would push the button off the
+   * video; an unknown corner would leave it unpositioned entirely.
+   */
+  function applySettings(settings: FabSettings | undefined): void {
+    const wanted = settings?.floatingButtonPosition;
+    corner = FAB_CORNERS.includes(wanted as FabCorner) ? (wanted as FabCorner) : DEFAULT_CORNER;
+
+    const wantedMargin = Number(settings?.floatingButtonMargin);
+    margin = Number.isFinite(wantedMargin)
+      ? Math.min(MARGIN_MAX, Math.max(0, Math.round(wantedMargin)))
+      : DEFAULT_MARGIN;
+
+    // Two switches, both of which must be on: the master switch (the extension
+    // as a whole) and the button's own.
+    setButtonEnabled(settings?.enabled !== false && settings?.floatingButtonEnabled !== false);
+
+    // If the button is on screen right now, move it immediately rather than
+    // waiting for the next hover - the user is looking at the popup and the
+    // page side by side, and a delayed change reads as one that did not work.
+    position();
+  }
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !changes.settings) return;
-    const next = changes.settings.newValue as { enabled?: boolean } | undefined;
-    setButtonEnabled(next?.enabled !== false);
+    applySettings(changes.settings.newValue as FabSettings | undefined);
   });
 
-  // The master switch governs the overlay too: with sniffing off, the extension
-  // should leave no trace on the page at all.
   chrome.storage.local.get('settings', (bag) => {
-    const settings = (bag as { settings?: { enabled?: boolean } })?.settings;
-    setButtonEnabled(settings?.enabled !== false);
+    applySettings((bag as { settings?: FabSettings })?.settings);
   });
 })();

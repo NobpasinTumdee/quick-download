@@ -182,6 +182,23 @@ export type UiMessage =
 /** 'system' follows prefers-color-scheme; the toggle writes an explicit value. */
 export type ThemePreference = 'system' | 'dark' | 'light';
 
+/** Which corner of the video the floating download button sits in. */
+export type FloatingButtonPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+
+export const FLOATING_BUTTON_POSITIONS: ReadonlyArray<{
+  value: FloatingButtonPosition;
+  label: string;
+}> = [
+  { value: 'top-right', label: 'Top right' },
+  { value: 'top-left', label: 'Top left' },
+  { value: 'bottom-right', label: 'Bottom right' },
+  { value: 'bottom-left', label: 'Bottom left' },
+];
+
+/** Keeps the button on the video and off the player's own controls. */
+export const FLOATING_BUTTON_MARGIN_MIN = 0;
+export const FLOATING_BUTTON_MARGIN_MAX = 200;
+
 export interface Settings {
   /** Master switch. When false the service worker sniffs nothing at all. */
   enabled: boolean;
@@ -214,6 +231,12 @@ export interface Settings {
   notifyOnComplete: boolean;
   /** Drop finished items from the list a few seconds after they complete. */
   autoCleanup: boolean;
+  /** Show the hover button over videos on the page. */
+  floatingButtonEnabled: boolean;
+  /** Which corner of the video it sits in. */
+  floatingButtonPosition: FloatingButtonPosition;
+  /** Distance from that corner, in pixels. */
+  floatingButtonMargin: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -232,6 +255,9 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultQuality: 'best',
   notifyOnComplete: true,
   autoCleanup: true,
+  floatingButtonEnabled: true,
+  floatingButtonPosition: 'top-right',
+  floatingButtonMargin: 10,
 };
 
 /** How long a finished item stays visible before auto-cleanup removes it. */

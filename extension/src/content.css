@@ -20,6 +20,11 @@
   all: initial;
 
   position: fixed !important;
+  /* Only left/top are ever written, from the video's own rectangle. Pinning
+     these to auto stops a page rule (or a stale value) from anchoring the
+     button to the window edge instead. */
+  right: auto !important;
+  bottom: auto !important;
   /* High enough to sit over a player's own overlays, deliberately short of the
      maximum so a page's modal or cookie banner still covers us. */
   z-index: 2147483000 !important;

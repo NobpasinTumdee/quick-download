@@ -8,7 +8,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { hostInList, isAdHost, parseDomainList, sniffDecision } from '../dist/filters.js';
-import { DEFAULT_SETTINGS } from '../dist/types.js';
+import {
+  DEFAULT_SETTINGS,
+  FLOATING_BUTTON_MARGIN_MAX,
+  FLOATING_BUTTON_MARGIN_MIN,
+  FLOATING_BUTTON_POSITIONS,
+} from '../dist/types.js';
 
 const KB = 1024;
 
@@ -30,6 +35,28 @@ test('defaults match the documented behaviour', () => {
   assert.deepEqual(DEFAULT_SETTINGS.cookieAllowlist, ['instagram.com', 'facebook.com']);
   assert.equal(DEFAULT_SETTINGS.minFileSizeKB, 500);
   assert.equal(DEFAULT_SETTINGS.smartFilter, true);
+});
+
+test('the floating button ships on, top right, 10px from the corner', () => {
+  assert.equal(DEFAULT_SETTINGS.floatingButtonEnabled, true);
+  assert.equal(DEFAULT_SETTINGS.floatingButtonPosition, 'top-right');
+  assert.equal(DEFAULT_SETTINGS.floatingButtonMargin, 10);
+});
+
+test('every corner the popup offers is one the content script accepts', () => {
+  // The <select> in popup.html and the whitelist in content.ts are written out
+  // separately - the content script cannot import, so it re-declares them.
+  // A corner in one list and not the other silently does nothing.
+  const offered = FLOATING_BUTTON_POSITIONS.map((p) => p.value).sort();
+  assert.deepEqual(offered, ['bottom-left', 'bottom-right', 'top-left', 'top-right']);
+  assert.ok(offered.includes(DEFAULT_SETTINGS.floatingButtonPosition));
+});
+
+test('the margin bounds leave the button on the video', () => {
+  assert.equal(FLOATING_BUTTON_MARGIN_MIN, 0);
+  assert.ok(FLOATING_BUTTON_MARGIN_MAX <= 200, 'a larger margin can push it off a small player');
+  assert.ok(DEFAULT_SETTINGS.floatingButtonMargin >= FLOATING_BUTTON_MARGIN_MIN);
+  assert.ok(DEFAULT_SETTINGS.floatingButtonMargin <= FLOATING_BUTTON_MARGIN_MAX);
 });
 
 // ---------------------------------------------------------------------------
