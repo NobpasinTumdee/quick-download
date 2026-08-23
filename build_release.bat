@@ -24,19 +24,21 @@ if exist ReleaseTemp rmdir /s /q ReleaseTemp
 mkdir ReleaseTemp
 mkdir ReleaseTemp\extension
 mkdir ReleaseTemp\bin
+mkdir ReleaseTemp\extension\src
 
-:: ก๊อปปี้เฉพาะไฟล์ของ Extension ที่ใช้งานจริง (ข้าม node_modules และ src)
+:: ก๊อปปี้เฉพาะไฟล์ของ Extension ที่ใช้งานจริง
 xcopy /E /I /Y extension\dist ReleaseTemp\extension\dist >nul
 xcopy /E /I /Y extension\icons ReleaseTemp\extension\icons >nul
 copy extension\manifest.json ReleaseTemp\extension\ >nul
 copy extension\popup.html ReleaseTemp\extension\ >nul
 copy extension\popup.css ReleaseTemp\extension\ >nul
-:: ถ้ามีไฟล์ .html หรือ .css อื่นๆ ที่อยู่หน้าแรกของ extension ให้ใส่ copy เพิ่มบรรทัดนี้ได้เลย
+copy extension\rules.json ReleaseTemp\extension\ >nul
+copy extension\src\content.css ReleaseTemp\extension\src\ >nul
 
 :: ก๊อปปี้โฟลเดอร์ bin (ที่มี quick-download.exe)
 xcopy /E /I /Y bin ReleaseTemp\bin >nul
 
-:: สร้างไฟล์ install.bat ง่ายๆ สำหรับให้ User ทั่วไปกดติดตั้ง
+:: สร้างไฟล์ install_host.bat สำหรับ User (ข้ามการ Build Go)
 echo @echo off > ReleaseTemp\install_host.bat
 echo title Quick Download - Host Setup >> ReleaseTemp\install_host.bat
 echo set /p EXT_ID="Paste your Chrome Extension ID here and press Enter: " >> ReleaseTemp\install_host.bat
