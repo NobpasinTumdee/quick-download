@@ -127,6 +127,23 @@ export interface JobProgress {
   error?: string;
 }
 
+/**
+ * Name of the long-lived port a popup opens to receive progress.
+ *
+ * A port rather than repeated sendMessage calls: it gives the worker an exact
+ * open/closed signal for the UI (onDisconnect fires when the popup is
+ * destroyed), which is what decides whether the engine socket is still needed.
+ */
+export const PROGRESS_PORT = 'qd-progress';
+
+/** What the worker pushes down that port. */
+export interface ProgressPush {
+  type: 'snapshot';
+  jobs: JobProgress[];
+  /** Whether the worker's own socket to the engine is up. */
+  connected: boolean;
+}
+
 /** What the popup needs in order to reach the engine's WebSocket. */
 export interface EngineInfo {
   ok: boolean;
@@ -150,6 +167,16 @@ export type UiMessage =
   | { kind: 'openDashboard' }
   | { kind: 'engineInfo' }
   | { kind: 'getSettings' }
+  /** The latest engine snapshot the worker has, for a popup that just opened. */
+  | { kind: 'progress' }
+  /** A download started from the page itself: the floating button. */
+  | {
+      kind: 'downloadFromPage';
+      url: string;
+      pageUrl?: string;
+      title?: string;
+      streamType?: StreamType;
+    }
   | { kind: 'setSettings'; settings: Partial<Settings> };
 
 /** 'system' follows prefers-color-scheme; the toggle writes an explicit value. */

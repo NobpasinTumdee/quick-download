@@ -27,6 +27,12 @@
 
 import { installContextMenus, registerContextMenus } from './contextMenu.js';
 import {
+  EngineFeed,
+  hasActiveJobs,
+  snapshotStates,
+  terminalTransitions,
+} from './engineSocket.js';
+import {
   classify,
   cleanPageUrl,
   hostInList,
@@ -44,11 +50,14 @@ import {
   DEFAULT_SETTINGS,
   type HostRequest,
   type HostResponse,
+  type JobProgress,
   type MediaItem,
   type MediaKind,
   type Quality,
   type EngineInfo,
   type ScanResult,
+  PROGRESS_PORT,
+  type ProgressPush,
   type Settings,
   type StreamType,
   type UiMessage,
@@ -263,6 +272,10 @@ async function startDownload(
     savePath: settings.savePath?.trim() || undefined,
     requestId: crypto.randomUUID(),
   });
+
+  // Watch for what we just queued, so its completion is announced even if no
+  // popup is ever opened.
+  if (response.ok) holdForEnqueue();
 
   await flash(response.ok ? '✓' : '!', response.ok ? '#22c55e' : '#ef4444');
   if (!response.ok) {
@@ -662,6 +675,203 @@ registerContextMenus({
 });
 
 // ---------------------------------------------------------------------------
+// Engine feed
+// ---------------------------------------------------------------------------
+//
+// The WebSocket to the engine lives here, not in the popup. Two things follow
+// from that, and both are the point of the exercise:
+//
+//   - completion notifications fire whether or not any UI is open, and
+//   - the popup becomes a subscriber, so opening it costs one message instead
+//     of a fresh connection and a fresh reconnect loop.
+//
+// Chrome 116+ keeps a service worker alive while its WebSocket carries traffic,
+// which is what makes this viable at all. The flip side is that a socket held
+// open forever pins the worker forever, so EngineFeed is demand-driven: see the
+// hold/release calls below.
+
+const DEFAULT_ENGINE_ORIGIN = 'http://127.0.0.1:9090';
+
+let feed: EngineFeed | null = null;
+/** Cached from the last ping, so bringing the feed up costs no extra host call. */
+let engineOrigin: string | undefined;
+let feedStarting: Promise<EngineFeed | null> | null = null;
+
+/** The most recent snapshot, replayed to a popup the moment it opens. */
+let latestJobs: JobProgress[] = [];
+
+/**
+ * The state each job was in when we last looked.
+ *
+ * Held in memory on purpose. If the worker is torn down, this map is lost and
+ * the next snapshot notifies about nothing - which is right: a job that
+ * finished while nobody was watching is history, not news.
+ */
+let lastStates = new Map<string, string>();
+
+/** Popups and side panels currently listening. */
+const uiPorts = new Set<chrome.runtime.Port>();
+
+/** Job ids already announced, in session storage so a respawn cannot repeat them. */
+const NOTIFIED_KEY = 'notifiedJobs';
+
+async function alreadyNotified(id: string): Promise<boolean> {
+  try {
+    const bag = await chrome.storage.session.get(NOTIFIED_KEY);
+    const ids = (bag[NOTIFIED_KEY] as string[] | undefined) ?? [];
+    if (ids.includes(id)) return true;
+    // Keep the list bounded; the engine forgets old jobs long before this.
+    await chrome.storage.session.set({ [NOTIFIED_KEY]: [...ids, id].slice(-200) });
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Brings the feed up, resolving the engine's origin first.
+ *
+ * The ping doubles as the daemon's wake-up call, so this also covers the case
+ * where the engine is not running yet when the first popup opens.
+ */
+function ensureFeed(): Promise<EngineFeed | null> {
+  if (feed) return Promise.resolve(feed);
+  if (feedStarting) return feedStarting;
+
+  feedStarting = (async () => {
+    // A ping costs a host process, and the popup usually made one moments ago
+    // for its status chip - so reuse that answer when we have it.
+    const origin =
+      engineOrigin ?? (await sendToHost({ type: 'ping' })).dashboard ?? DEFAULT_ENGINE_ORIGIN;
+    if (!feed) {
+      feed = new EngineFeed({
+        origin,
+        onSnapshot: (jobs) => void onSnapshot(jobs),
+        onStatus: (connected) => pushToUi(connected),
+      });
+    }
+    feedStarting = null;
+    return feed;
+  })();
+
+  return feedStarting;
+}
+
+async function onSnapshot(jobs: JobProgress[]): Promise<void> {
+  latestJobs = jobs;
+
+  // Anything that just finished is announced before the states are rolled
+  // forward, because the transition is the only thing that is news.
+  const finished = terminalTransitions(lastStates, jobs);
+  lastStates = snapshotStates(jobs);
+  for (const job of finished) await announce(job);
+
+  // The engine is working: hold the socket (and therefore the worker) open.
+  // When it stops, the hold is dropped and the socket lingers briefly before
+  // closing, so a burst of downloads does not thrash the connection.
+  if (hasActiveJobs(jobs)) feed?.hold('jobs');
+  else feed?.release('jobs');
+
+  pushToUi(feed?.isConnected ?? false);
+}
+
+/** One notification per job, per outcome. */
+async function announce(job: JobProgress): Promise<void> {
+  if (job.state === 'canceled') return; // the user did that on purpose
+  const settings = await getSettings();
+  if (settings.notifyOnComplete === false) return;
+  if (await alreadyNotified(job.id)) return;
+
+  const ok = job.state === 'completed';
+  try {
+    chrome.notifications.create(`qd-${job.id}`, {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title: ok ? 'Download complete' : 'Download failed',
+      message: ok ? job.filename || job.url : `${job.filename || job.url}\n${job.error ?? ''}`.trim(),
+      silent: false,
+    });
+  } catch (err) {
+    console.debug('[quick-download] notification failed', err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fan-out to the UI
+// ---------------------------------------------------------------------------
+
+let pushPending = false;
+
+/**
+ * Forwards the snapshot to every open popup.
+ *
+ * Throttled: the engine broadcasts several times a second, and the popup only
+ * repaints a handful of progress bars from it. A dropped frame costs nothing
+ * because every snapshot is absolute.
+ */
+function pushToUi(connected: boolean): void {
+  if (uiPorts.size === 0 || pushPending) return;
+  pushPending = true;
+  setTimeout(() => {
+    pushPending = false;
+    const message: ProgressPush = { type: 'snapshot', jobs: latestJobs, connected };
+    for (const port of uiPorts) {
+      try {
+        port.postMessage(message);
+      } catch {
+        // The popup went away between the check and the post.
+        uiPorts.delete(port);
+      }
+    }
+  }, UI_PUSH_MS);
+}
+
+/** ~4 repaints a second is smooth; the engine's full rate is not worth relaying. */
+const UI_PUSH_MS = 250;
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== PROGRESS_PORT) return;
+  uiPorts.add(port);
+
+  void (async () => {
+    const engine = await ensureFeed();
+    // A watching popup is a reason to be connected even with nothing running:
+    // the user is looking at the list and expects it to be live.
+    engine?.hold('ui');
+    try {
+      port.postMessage({
+        type: 'snapshot',
+        jobs: latestJobs,
+        connected: engine?.isConnected ?? false,
+      } satisfies ProgressPush);
+    } catch {
+      /* closed already */
+    }
+  })();
+
+  port.onDisconnect.addListener(() => {
+    uiPorts.delete(port);
+    // onDisconnect is the precise "the popup is gone" signal that repeated
+    // sendMessage calls could never give us.
+    if (uiPorts.size === 0) feed?.release('ui');
+  });
+});
+
+/**
+ * Keeps the feed up across the gap between queuing a download and the engine
+ * reporting it, which is when there is nothing yet for the 'jobs' hold to see.
+ */
+function holdForEnqueue(): void {
+  void (async () => {
+    const engine = await ensureFeed();
+    engine?.hold('enqueue');
+    setTimeout(() => engine?.release('enqueue'), ENQUEUE_HOLD_MS);
+  })();
+}
+
+const ENQUEUE_HOLD_MS = 30_000;
+
+// ---------------------------------------------------------------------------
 // Popup RPC
 // ---------------------------------------------------------------------------
 
@@ -774,6 +984,7 @@ chrome.runtime.onMessage.addListener((message: UiMessage, _sender, sendResponse)
         // ping also starts the daemon if it is not running, and its reply
         // carries the dashboard origin the popup turns into a ws:// URL.
         const pong = await sendToHost({ type: 'ping' });
+        if (pong.dashboard) engineOrigin = pong.dashboard;
         const info: EngineInfo = {
           ok: pong.ok,
           version: pong.version,
@@ -782,6 +993,27 @@ chrome.runtime.onMessage.addListener((message: UiMessage, _sender, sendResponse)
           error: pong.error,
         };
         sendResponse(info);
+        break;
+      }
+
+      case 'progress': {
+        // What a popup asks for the moment it opens, before its port has had a
+        // chance to deliver anything.
+        const engine = await ensureFeed();
+        engine?.hold('ui');
+        sendResponse({ jobs: latestJobs, connected: engine?.isConnected ?? false });
+        break;
+      }
+
+      case 'downloadFromPage': {
+        // The floating button on the page. Same path as the context menu, so it
+        // inherits the save path, the cookie allowlist and the default quality.
+        const response = await startDownload(message.url, {
+          pageUrl: message.pageUrl,
+          kind: message.streamType,
+          title: message.title,
+        });
+        sendResponse(response);
         break;
       }
 

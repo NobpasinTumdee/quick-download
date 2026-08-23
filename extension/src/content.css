@@ -1,0 +1,145 @@
+/*
+ * Quick Download — the floating button injected over videos.
+ *
+ * This stylesheet lands in the page's own cascade, next to whatever CSS the
+ * site ships, so it is written defensively:
+ *
+ *   - `all: initial` first, so nothing the page sets on `button`, `*` or a
+ *     shared utility class leaks in. Every property the button needs is then
+ *     declared explicitly, because that reset threw away the defaults too.
+ *   - `!important` on the handful of properties that decide whether the button
+ *     is visible at all. A page rule like `button { position: static
+ *     !important }` outranks a plain declaration of ours no matter how specific
+ *     the selector is, and there are sites that ship exactly that.
+ *
+ * Everything else is left normal, so the button stays overridable by anyone who
+ * genuinely wants to restyle it.
+ */
+
+.qd-fab {
+  all: initial;
+
+  position: fixed !important;
+  /* High enough to sit over a player's own overlays, deliberately short of the
+     maximum so a page's modal or cookie banner still covers us. */
+  z-index: 2147483000 !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box !important;
+  width: 34px !important;
+  height: 34px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+
+  border: 1px solid rgba(255, 255, 255, 0.28) !important;
+  border-radius: 10px !important;
+  /* Glassmorphism: the video shows through, so the button reads as part of the
+     player rather than a box dropped on top of it. */
+  background: rgba(20, 22, 28, 0.44) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  backdrop-filter: blur(10px) saturate(140%);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+
+  color: #f4f6fb !important;
+  font: 600 13px/1 system-ui, -apple-system, 'Segoe UI', sans-serif !important;
+  text-align: center;
+  cursor: pointer !important;
+  user-select: none;
+  -webkit-user-select: none;
+
+  /* Hidden by default: it exists from the first hover onwards and simply fades.
+     visibility (not display) keeps the transition, and stops the invisible
+     button from swallowing clicks meant for the player underneath. */
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  transform: translateY(-4px) scale(0.94);
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease,
+    background-color 0.18s ease,
+    visibility 0s linear 0.18s;
+}
+
+.qd-fab.qd-fab--on {
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease,
+    background-color 0.18s ease,
+    visibility 0s;
+}
+
+.qd-fab:hover {
+  background: rgba(32, 36, 46, 0.62) !important;
+  border-color: rgba(255, 255, 255, 0.42) !important;
+}
+
+.qd-fab:active {
+  transform: scale(0.94);
+}
+
+.qd-fab:focus-visible {
+  outline: 2px solid #6ea8fe !important;
+  outline-offset: 2px;
+}
+
+.qd-fab__icon {
+  display: block !important;
+  width: 17px !important;
+  height: 17px !important;
+  /* The stroke follows `color`, so one declaration themes icon and text. */
+  color: inherit;
+  pointer-events: none;
+}
+
+/* The status mark replaces the icon while a click is in flight. */
+.qd-fab__mark {
+  display: none !important;
+  color: inherit;
+  font: inherit;
+  pointer-events: none;
+}
+
+.qd-fab[data-state] .qd-fab__icon {
+  display: none !important;
+}
+
+.qd-fab[data-state] .qd-fab__mark {
+  display: block !important;
+}
+
+.qd-fab[data-state='done'] {
+  color: #7ee2a8 !important;
+  border-color: rgba(126, 226, 168, 0.5) !important;
+}
+
+.qd-fab[data-state='fail'] {
+  color: #ff9d9d !important;
+  border-color: rgba(255, 157, 157, 0.5) !important;
+}
+
+/* On a light page a dark chip is the readable one, so this only softens it. */
+@media (prefers-color-scheme: light) {
+  .qd-fab {
+    border-color: rgba(255, 255, 255, 0.34) !important;
+    background: rgba(28, 30, 38, 0.38) !important;
+  }
+
+  .qd-fab:hover {
+    background: rgba(28, 30, 38, 0.58) !important;
+  }
+}
+
+/* Respect the user's motion preference: appear, but do not animate. */
+@media (prefers-reduced-motion: reduce) {
+  .qd-fab,
+  .qd-fab.qd-fab--on {
+    transition: opacity 0.01s linear, visibility 0s;
+    transform: none;
+  }
+}

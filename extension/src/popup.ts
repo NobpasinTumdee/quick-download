@@ -7,7 +7,7 @@
  */
 
 import { parseDomainList } from './filters.js';
-import { ProgressFeed, normaliseUrl, type ProgressMap } from './progress.js';
+import { normaliseUrl, toProgressMap, type ProgressMap } from './progress.js';
 import {
   AUTO_CLEANUP_DELAY_MS,
   QUALITY_LABELS,
@@ -16,6 +16,8 @@ import {
   type JobProgress,
   type MediaItem,
   type MediaKind,
+  PROGRESS_PORT,
+  type ProgressPush,
   type Quality,
   type Settings,
   type ThemePreference,
@@ -42,7 +44,8 @@ let scope: 'tab' | 'all' = 'tab';
 let currentTabId: number | undefined;
 let items: MediaItem[] = [];
 let progress: ProgressMap = new Map();
-let feed: ProgressFeed | null = null;
+let progressPort: chrome.runtime.Port | null = null;
+let closing = false;
 
 /** Job ids for downloads started from this popup, so they match immediately. */
 const startedJobs = new Map<string, string>();
@@ -52,39 +55,6 @@ let settings: Settings | undefined;
 
 /** Pending auto-cleanup timers, keyed by item id, so they can be cancelled. */
 const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-/**
- * Job ids we have already notified about.
- *
- * The engine keeps broadcasting a completed job for as long as it stays in the
- * list, so without this every snapshot would fire another notification. It
- * lives in session storage rather than memory because the popup is destroyed
- * and rebuilt constantly - an in-memory set would re-notify on every reopen.
- */
-const NOTIFIED_KEY = 'notifiedJobs';
-let notified = new Set<string>();
-
-async function loadNotified(): Promise<void> {
-  try {
-    const bag = await chrome.storage.session.get(NOTIFIED_KEY);
-    notified = new Set((bag[NOTIFIED_KEY] as string[]) ?? []);
-  } catch {
-    notified = new Set();
-  }
-}
-
-async function rememberNotified(id: string): Promise<void> {
-  notified.add(id);
-  try {
-    // Keep the tail only: this set exists to suppress duplicates, not to be a
-    // history, and session storage has a quota to respect.
-    const trimmed = [...notified].slice(-200);
-    notified = new Set(trimmed);
-    await chrome.storage.session.set({ [NOTIFIED_KEY]: trimmed });
-  } catch {
-    /* a failed write only risks a duplicate notification */
-  }
-}
 
 /** Promise wrapper around chrome.runtime.sendMessage. */
 function ask<T>(message: UiMessage): Promise<T> {
@@ -283,39 +253,21 @@ function repaintProgressOnly(): void {
     const item = items[index];
     if (!item) return;
     paintProgress(node as HTMLElement, item);
-    void handleCompletion(item, node as HTMLElement);
+    handleCompletion(item, node as HTMLElement);
   });
 }
 
 /**
- * Fires the completion notification once, then schedules auto-cleanup.
+ * Schedules auto-cleanup for a finished item.
  *
- * Notifications are raised here rather than in the service worker because the
- * WebSocket lives in this document. That means they only appear while the popup
- * or side panel is open - which is exactly what the side panel is for. Moving
- * them to the worker would need it to hold the socket open permanently.
+ * The notification that goes with it is raised by the service worker, which now
+ * owns the engine socket. Doing it here as well would announce every download
+ * twice whenever a popup happened to be open - and announce nothing at all,
+ * which was the old behaviour, whenever one was not.
  */
-async function handleCompletion(item: MediaItem, node: HTMLElement): Promise<void> {
+function handleCompletion(item: MediaItem, node: HTMLElement): void {
   const job = jobFor(item);
   if (!job || job.state !== 'completed') return;
-  if (notified.has(job.id)) return;
-
-  await rememberNotified(job.id);
-
-  if (settings?.notifyOnComplete !== false) {
-    try {
-      chrome.notifications.create(`qd-${job.id}`, {
-        type: 'basic',
-        iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-        title: 'Download complete',
-        message: job.filename || item.filename,
-        silent: false,
-      });
-    } catch (err) {
-      console.debug('[quick-download] notification failed', err);
-    }
-  }
-
   if (settings?.autoCleanup !== false) scheduleCleanup(item, node);
 }
 
@@ -380,16 +332,57 @@ async function refresh(withThumbnails = false): Promise<void> {
   render();
 }
 
-async function connectFeed(dashboard: string): Promise<void> {
-  feed?.stop();
-  feed = new ProgressFeed({
-    dashboard,
-    onUpdate: (jobs) => {
-      progress = jobs;
-      repaintProgressOnly();
-    },
+/**
+ * Subscribes to the worker's engine feed.
+ *
+ * The popup no longer opens a WebSocket of its own. It was the wrong owner: a
+ * popup is destroyed the moment it loses focus, so the connection - and every
+ * notification that depended on it - died with it. The worker holds the socket
+ * now, and this port is both how snapshots arrive and how the worker knows a UI
+ * is watching (its onDisconnect is what releases the socket).
+ */
+function subscribeToProgress(): void {
+  if (closing) return;
+
+  let port: chrome.runtime.Port;
+  try {
+    port = chrome.runtime.connect({ name: PROGRESS_PORT });
+  } catch {
+    // The worker is being replaced (an extension update, say).
+    setTimeout(subscribeToProgress, RESUBSCRIBE_MS);
+    return;
+  }
+  progressPort = port;
+
+  port.onMessage.addListener((message: ProgressPush) => {
+    if (message?.type !== 'snapshot') return;
+    progress = toProgressMap(message.jobs ?? []);
+    showEngineConnection(message.connected);
+    repaintProgressOnly();
   });
-  feed.start();
+
+  port.onDisconnect.addListener(() => {
+    progressPort = null;
+    // A worker that went idle is normal, not an error: reconnecting wakes it.
+    if (!closing) setTimeout(subscribeToProgress, RESUBSCRIBE_MS);
+  });
+}
+
+const RESUBSCRIBE_MS = 600;
+
+/** Reflects the worker's socket state in the engine chip. */
+function showEngineConnection(connected: boolean): void {
+  if (!el.engine.textContent) return;
+  el.engine.classList.toggle('online', connected);
+  el.engine.classList.toggle('offline', !connected);
+}
+
+/** Asks the worker for whatever it already has, so the first paint is not empty. */
+async function primeProgress(): Promise<void> {
+  const snapshot = await ask<{ jobs?: JobProgress[]; connected?: boolean }>({ kind: 'progress' });
+  if (!snapshot) return;
+  progress = toProgressMap(snapshot.jobs ?? []);
+  showEngineConnection(snapshot.connected === true);
 }
 
 async function checkEngine(): Promise<void> {
@@ -401,7 +394,7 @@ async function checkEngine(): Promise<void> {
 
   el.warning.hidden = !ok || info.toolsReady !== false;
 
-  if (ok) await connectFeed(info.dashboard ?? 'http://127.0.0.1:9090');
+  if (ok) await primeProgress();
 }
 
 function applyEnabled(enabled: boolean): void {
@@ -630,8 +623,14 @@ for (const [id, key] of [
   });
 }
 
-// Pending cleanup timers must not outlive the document.
-addEventListener('pagehide', clearCleanupTimers);
+// Pending cleanup timers must not outlive the document, and a port that
+// reconnects on disconnect must be told this disconnect was the last one.
+addEventListener('pagehide', () => {
+  closing = true;
+  clearCleanupTimers();
+  progressPort?.disconnect();
+  progressPort = null;
+});
 
 $<HTMLSelectElement>('set-minimage').addEventListener('change', (e) => {
   void ask({
@@ -659,9 +658,9 @@ void (async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTabId = tab?.id;
 
-  await loadNotified();
   const loaded = await loadSettings();
   await checkEngine();
+  subscribeToProgress();
   // A first paint that includes a thumbnail scan is the whole point of the
   // popup — but not while sniffing is switched off.
   await refresh(loaded?.enabled !== false);

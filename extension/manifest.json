@@ -45,6 +45,16 @@
     "service_worker": "dist/background.js",
     "type": "module"
   },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["dist/content.js"],
+      "css": ["src/content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
   "declarative_net_request": {
     "rule_resources": [
       {
